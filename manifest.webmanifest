@@ -1,0 +1,13 @@
+{
+  "name": "血壓記錄",
+  "short_name": "血壓記錄",
+  "description": "多成員血壓記錄,含時段標籤、照片存查與趨勢圖表",
+  "display": "standalone",
+  "start_url": "./",
+  "background_color": "#f2f4f6",
+  "theme_color": "#2564b0",
+  "icons": [
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
