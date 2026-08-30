@@ -162,6 +162,7 @@ textarea.note { width:100%; background: var(--sunken); border:1px solid var(--ha
 
 .io-row { display:flex; gap:8px; }
 .io-row button { flex:1; padding: 11px; border-radius: 10px; background: var(--sunken); border:1px solid var(--hair); font-size: 13px; font-weight:700; color: var(--ink2); }
+.io-row button:disabled { opacity: .4; }
 
 dialog { border:none; border-radius: 16px; padding:0; background: var(--surface); color: var(--ink); width: 92%; max-width: 440px; }
 dialog::backdrop { background: rgba(0,0,0,.4); }
@@ -231,17 +232,15 @@ const TIME_TAGS = ['早上起床','早餐前','早餐後','午餐前','午餐後
 
 let state = { members: [], records: [] };
 let ui = { tab:'entry', entry:null, historyFilter:'all', photoTargetDataUrl:null };
+let syncCfg = null;
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
+function activeMembers(){ return state.members.filter(m=>!m.deleted); }
+function activeRecords(){ return state.records.filter(r=>!r.deleted); }
 
 async function loadState(){
   const s = await idbGet(KEY);
-  if (s && s.members && s.members.length){
-    state = s;
-  } else {
-    state = { members: [{id:uid(), name:'我', color: COLORS[0]}], records: [] };
-    await saveState();
-  }
+  state = (s && s.members) ? s : { members: [], records: [] };
   if (!ui.entry) resetEntry();
 }
 let saveTimer=null;
@@ -250,6 +249,59 @@ function saveState(){
   return new Promise(res=>{
     saveTimer = setTimeout(async ()=>{ await idbSet(KEY, state); res(); }, 120);
   });
+}
+
+/* ---------- Family sync (Firebase Realtime Database, shared JSON blob) ---------- */
+async function loadSyncCfg(){ syncCfg = (await idbGet('sync')) || null; }
+async function saveSyncCfg(){ await idbSet('sync', syncCfg); }
+function mergeArr(localArr, remoteArr){
+  const map = new Map();
+  (localArr||[]).forEach(x=>map.set(x.id, x));
+  (remoteArr||[]).forEach(x=>{
+    const cur = map.get(x.id);
+    if (!cur || (x.up||0) > (cur.up||0)) map.set(x.id, x);
+  });
+  return Array.from(map.values());
+}
+function mergeState(local, remote){
+  return {
+    members: mergeArr(local.members, remote && remote.members),
+    records: mergeArr(local.records, remote && remote.records),
+  };
+}
+async function fbGetRemote(dbUrl){
+  const res = await fetch(dbUrl.replace(/\/$/,'') + '/bp_state.json', {cache:'no-store'});
+  if (!res.ok) return null;
+  return res.json();
+}
+async function fbPut(dbUrl, data){
+  const res = await fetch(dbUrl.replace(/\/$/,'') + '/bp_state.json', {
+    method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
+  });
+  return res.ok;
+}
+let syncing = false;
+async function doSync(alertOnFail){
+  if (!syncCfg || !syncCfg.dbUrl || syncing) return;
+  syncing = true;
+  try {
+    const remote = await fbGetRemote(syncCfg.dbUrl);
+    state = mergeState(state, remote || {});
+    await saveState();
+    await fbPut(syncCfg.dbUrl, state);
+    syncCfg.lastSync = Date.now();
+    await saveSyncCfg();
+  } catch(e){
+    if (alertOnFail) alert('同步失敗,請檢查網路連線或同步金鑰是否正確');
+  } finally {
+    syncing = false;
+  }
+}
+let syncTimer = null;
+function scheduleSync(){
+  if (!syncCfg || !syncCfg.dbUrl) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async ()=>{ await doSync(false); render(); }, 1500);
 }
 
 function resetEntry(){
@@ -335,11 +387,11 @@ function render(){
 
 /* ---------- Entry tab ---------- */
 function renderEntry(){
-  if (!state.members.length){
-    return `<div class="empty">請先到「設定」新增至少一位成員</div>`;
+  if (!activeMembers().length){
+    return `<div class="empty">請先到「設定」新增成員,或如果家人已經在用,貼上同步金鑰即可帶出家人名單</div>`;
   }
   const e = ui.entry;
-  const mchips = state.members.map(m=>`
+  const mchips = activeMembers().map(m=>`
     <button class="mchip ${m.id===e.memberId?'on':''}" style="--m-color:${m.color}" data-act="pick-member" data-id="${m.id}">
       <span class="dot"></span>${escapeHtml(m.name)}
     </button>`).join('');
@@ -398,8 +450,8 @@ function stepperRow(label,key,val,unit,step){
 
 /* ---------- History tab ---------- */
 function renderHistory(){
-  const opts = `<option value="all">全部成員</option>` + state.members.map(m=>`<option value="${m.id}" ${ui.historyFilter===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('');
-  let recs = [...state.records].sort((a,b)=>b.ts-a.ts);
+  const opts = `<option value="all">全部成員</option>` + activeMembers().map(m=>`<option value="${m.id}" ${ui.historyFilter===m.id?'selected':''}>${escapeHtml(m.name)}</option>`).join('');
+  let recs = [...activeRecords()].sort((a,b)=>b.ts-a.ts);
   if (ui.historyFilter!=='all') recs = recs.filter(r=>r.memberId===ui.historyFilter);
   const rows = recs.map(r=>{
     const m = memberById(r.memberId);
@@ -423,9 +475,9 @@ function renderHistory(){
 
 /* ---------- Stats tab ---------- */
 function renderStats(){
-  if (!state.members.length) return `<div class="empty">請先新增成員</div>`;
-  return state.members.map(m=>{
-    const recs = state.records.filter(r=>r.memberId===m.id).sort((a,b)=>a.ts-b.ts);
+  if (!activeMembers().length) return `<div class="empty">請先新增成員</div>`;
+  return activeMembers().map(m=>{
+    const recs = activeRecords().filter(r=>r.memberId===m.id).sort((a,b)=>a.ts-b.ts);
     if (!recs.length){
       return `<div class="card"><h2><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${m.color};margin-right:6px"></span>${escapeHtml(m.name)}${memberDemoText(m)}</h2><div class="empty">尚無記錄</div></div>`;
     }
@@ -446,10 +498,10 @@ function renderStats(){
   }).join('');
 }
 function drawAllCharts(){
-  state.members.forEach(m=>{
+  activeMembers().forEach(m=>{
     const cv = document.getElementById('chart-'+m.id);
     if (!cv) return;
-    const recs = state.records.filter(r=>r.memberId===m.id).sort((a,b)=>a.ts-b.ts).slice(-30);
+    const recs = activeRecords().filter(r=>r.memberId===m.id).sort((a,b)=>a.ts-b.ts).slice(-30);
     drawChart(cv, recs);
   });
 }
@@ -494,13 +546,13 @@ function drawChart(canvas, recs){
 
 /* ---------- Settings tab ---------- */
 function renderSettings(){
-  const items = state.members.map(m=>`
+  const items = activeMembers().map(m=>`
     <div class="member-item">
       <span class="dot" style="background:${m.color}"></span>
       <span class="nm">${escapeHtml(m.name)}${m.age!=null?`<span class="demo">${m.age}歲</span>`:''}${genderLabel(m.gender)?`<span class="demo">${genderLabel(m.gender)}</span>`:''}</span>
       <button class="del" data-act="del-member" data-id="${m.id}">刪除</button>
     </div>`).join('');
-  const canAdd = state.members.length < 3;
+  const canAdd = activeMembers().length < 3;
   return `
   <div class="card">
     <h2>成員(最多 3 位)</h2>
@@ -520,6 +572,16 @@ function renderSettings(){
     <div class="color-pick" id="colorPick">${COLORS.map((c,i)=>`<span class="sw ${i===0?'on':''}" data-color="${c}" style="background:${c}"></span>`).join('')}</div>
     <div class="add-row"><button data-act="add-member" style="width:100%;text-align:center">新增成員</button></div>
     ` : `<div class="hint" style="margin-top:8px">已達 3 位上限,如需更換請先刪除</div>`}
+  </div>
+  <div class="card">
+    <h2>☁️ 家人同步</h2>
+    <div class="hint" style="margin-bottom:10px">貼上同步金鑰後,多台裝置(家人各自的手機)可共用同一份記錄。金鑰等同密碼,請勿公開分享;不填就只存在這台裝置上。</div>
+    <input class="time-input" id="syncKeyInput" placeholder="貼上同步金鑰(資料庫網址)" value="${escapeHtml(syncCfg?.dbUrl||'')}" style="margin-bottom:8px">
+    <div class="io-row">
+      <button data-act="save-sync">儲存金鑰</button>
+      <button data-act="sync-now" ${syncCfg?.dbUrl?'':'disabled'}>立即同步</button>
+    </div>
+    ${syncCfg?.lastSync ? `<div class="hint" style="margin-top:8px">上次同步:${fmtDate(syncCfg.lastSync)}</div>` : ''}
   </div>
   <div class="card">
     <h2>資料備份</h2>
@@ -567,6 +629,8 @@ function bindTabEvents(){
     else if (act==='del-member'){ delMember(t.dataset.id); }
     else if (act==='export-json'){ exportJson(); }
     else if (act==='import-json'){ importJson(); }
+    else if (act==='save-sync'){ await saveSyncKey(); }
+    else if (act==='sync-now'){ await doSync(true); render(); }
   };
   const note = document.getElementById('noteInput');
   if (note) note.oninput = ()=>{ ui.entry.note = note.value; };
@@ -600,7 +664,7 @@ async function saveEntry(){
   state.records.push({
     id: uid(), memberId: e.memberId, timeTag,
     sbp: e.sbp, dbp: e.dbp, pulse: e.pulse, note: e.note.trim(),
-    photo: e.photo, ts: e.ts
+    photo: e.photo, ts: e.ts, up: Date.now(), deleted: false
   });
   await saveState();
   resetEntry();
@@ -608,22 +672,24 @@ async function saveEntry(){
   render();
   const main = document.getElementById('main');
   main.scrollTop = 0;
+  scheduleSync();
 }
 
 function addMember(){
   const input = document.getElementById('newMemberName');
   const name = input.value.trim();
   if (!name) { input.focus(); return; }
-  if (state.members.length>=3) return;
+  if (activeMembers().length>=3) return;
   const sw = document.querySelector('#colorPick .sw.on');
-  const color = sw ? sw.dataset.color : COLORS[state.members.length % COLORS.length];
+  const color = sw ? sw.dataset.color : COLORS[activeMembers().length % COLORS.length];
   const ageInput = document.getElementById('newMemberAge');
   const ageVal = ageInput && ageInput.value.trim() ? parseInt(ageInput.value,10) : null;
   const genderBtn = document.querySelector('#genderPick button.on');
   const gender = genderBtn ? genderBtn.dataset.gender : '';
-  state.members.push({ id: uid(), name, color, age: (ageVal!=null && !isNaN(ageVal)) ? ageVal : null, gender: gender || null });
+  state.members.push({ id: uid(), name, color, age: (ageVal!=null && !isNaN(ageVal)) ? ageVal : null, gender: gender || null, up: Date.now(), deleted: false });
   saveState();
   render();
+  scheduleSync();
 }
 function delMember(id){
   const m = memberById(id);
@@ -631,11 +697,13 @@ function delMember(id){
   const hasRecs = state.records.some(r=>r.memberId===id);
   const msg = hasRecs ? `刪除「${m.name}」會一併刪除其所有記錄,確定嗎?` : `確定刪除「${m.name}」?`;
   confirmDialog(msg, async ()=>{
-    state.members = state.members.filter(x=>x.id!==id);
-    state.records = state.records.filter(r=>r.memberId!==id);
+    const now = Date.now();
+    m.deleted = true; m.up = now;
+    state.records.forEach(r=>{ if (r.memberId===id){ r.deleted = true; r.up = now; } });
     if (ui.entry.memberId===id) resetEntry();
     await saveState();
     render();
+    scheduleSync();
   });
 }
 
@@ -668,9 +736,10 @@ function openRecordDialog(id){
   document.getElementById('dlgDelete').onclick = ()=>{
     dlg.close();
     confirmDialog('確定刪除這筆記錄?', async ()=>{
-      state.records = state.records.filter(x=>x.id!==id);
+      r.deleted = true; r.up = Date.now();
       await saveState();
       render();
+      scheduleSync();
     });
   };
 }
@@ -713,10 +782,20 @@ function importJson(){
         state = data;
         await saveState();
         render();
+        scheduleSync();
       });
     } catch(err){ alert('匯入失敗:檔案格式不正確'); }
   };
   input.click();
+}
+
+async function saveSyncKey(){
+  const input = document.getElementById('syncKeyInput');
+  const url = input.value.trim();
+  syncCfg = url ? { dbUrl: url, lastSync: syncCfg?.dbUrl===url ? syncCfg.lastSync : null } : null;
+  await saveSyncCfg();
+  if (syncCfg) await doSync(true);
+  render();
 }
 
 /* ---------- Tabbar ---------- */
@@ -734,7 +813,14 @@ document.querySelector('.tabbar').addEventListener('click', (e)=>{
 })();
 
 /* ---------- Boot ---------- */
-loadState().then(render);
+loadState().then(async ()=>{
+  render();
+  await loadSyncCfg();
+  if (syncCfg && syncCfg.dbUrl){
+    await doSync(false);
+    render();
+  }
+});
 
 /* ---------- Service worker ---------- */
 if ('serviceWorker' in navigator){
