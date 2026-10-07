@@ -140,9 +140,18 @@ textarea.note { width:100%; background: var(--sunken); border:1px solid var(--ha
 
 .stat-grid { display:grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; margin-bottom: 12px; }
 .stat { background: var(--sunken); border-radius: 12px; padding: 10px 4px; text-align:center; min-width:0; }
-.stat .n { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.stat .n { font-size: clamp(14px, 4.8vw, 18px); font-weight: 800; font-variant-numeric: tabular-nums; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .stat .l { font-size: 11px; color: var(--muted); margin-top: 2px; }
 
+.slot-row { display:flex; align-items:center; gap:8px; padding:9px 4px; border-bottom:1px solid var(--hair); font-size:13px; cursor:pointer; }
+.slot-row:last-child { border-bottom:none; }
+.slot-row.head { cursor:default; font-size:11px; color:var(--muted); padding-top:2px; padding-bottom:6px; }
+.slot-row .nm { flex:1; min-width:0; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.slot-row .cnt { width:34px; text-align:right; color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+.slot-row .v { width:76px; text-align:right; font-weight:800; font-variant-numeric:tabular-nums; }
+.slot-row .tr { width:22px; text-align:center; font-weight:800; }
+.slot-row .tr.up { color:var(--bad); } .slot-row .tr.down { color:var(--ok); } .slot-row .tr.flat { color:var(--muted); }
+.slot-note { font-size:11px; color:var(--muted); margin-top:8px; line-height:1.5; }
 .legend { display:flex; gap:14px; font-size: 12px; color: var(--ink2); margin-bottom: 6px; }
 .legend .sw { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; }
 
@@ -231,7 +240,7 @@ const COLORS = ['#2564b0','#c0392b','#17936b','#8a5cd1','#d18a1c','#c25a9e'];
 const TIME_TAGS = ['早上起床','早餐前','早餐後','午餐前','午餐後','晚餐前','晚餐後','睡前','其他'];
 
 let state = { members: [], records: [] };
-let ui = { tab:'entry', entry:null, historyFilter:'all', photoTargetDataUrl:null };
+let ui = { tab:'entry', entry:null, historyFilter:'all', statsSlot:'all', photoTargetDataUrl:null };
 let syncCfg = null;
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
@@ -270,12 +279,12 @@ function mergeState(local, remote){
   };
 }
 async function fbGetRemote(dbUrl){
-  const res = await fetch(dbUrl.replace(/\/$/,'') + '/bp_state.json', {cache:'no-store'});
-  if (!res.ok) return null;
+  const res = await fetch(dbUrl.trim().replace(/\/+$/,'') + '/bp_state.json', {cache:'no-store'});
+  if (!res.ok) throw new Error(res.status===401||res.status===403 ? '金鑰沒有權限(可能還是舊金鑰,請貼上新金鑰)' : '伺服器回應 '+res.status);
   return res.json();
 }
 async function fbPut(dbUrl, data){
-  const res = await fetch(dbUrl.replace(/\/$/,'') + '/bp_state.json', {
+  const res = await fetch(dbUrl.trim().replace(/\/+$/,'') + '/bp_state.json', {
     method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(data)
   });
   return res.ok;
@@ -288,11 +297,13 @@ async function doSync(alertOnFail){
     const remote = await fbGetRemote(syncCfg.dbUrl);
     state = mergeState(state, remote || {});
     await saveState();
-    await fbPut(syncCfg.dbUrl, state);
+    const putOk = await fbPut(syncCfg.dbUrl, state);
+    if (!putOk) throw new Error('上傳失敗(金鑰沒有寫入權限)');
     syncCfg.lastSync = Date.now();
     await saveSyncCfg();
+    if (alertOnFail) alert('已同步!');
   } catch(e){
-    if (alertOnFail) alert('同步失敗,請檢查網路連線或同步金鑰是否正確');
+    if (alertOnFail) alert('同步失敗:' + (e && e.message ? e.message : '請檢查網路連線') + '\n\n請確認同步金鑰正確。');
   } finally {
     syncing = false;
   }
@@ -474,36 +485,134 @@ function renderHistory(){
 }
 
 /* ---------- Stats tab ---------- */
+const SLOT_COLORS = ['#e08a1e','#2564b0','#17936b','#8a5cd1','#c25a9e','#c0392b','#4aa3b8','#7a8b2e','#8b877a','#d1603d'];
+function slotColor(tag){ const i = allSlots().indexOf(tag); return SLOT_COLORS[(i<0?0:i)%SLOT_COLORS.length]; }
+function allSlots(){
+  const set = new Set(activeRecords().map(r=>r.timeTag));
+  const preset = TIME_TAGS.filter(t=>set.has(t));
+  const custom = [...set].filter(t=>!TIME_TAGS.includes(t)).sort();
+  return [...preset, ...custom];
+}
+function slotTrend(recs){
+  if (recs.length < 4) return {cls:'flat', sym:'·'};
+  const half = Math.floor(recs.length/2);
+  const avg = a => a.reduce((x,y)=>x+y.sbp,0)/a.length;
+  const diff = avg(recs.slice(half)) - avg(recs.slice(0,half));
+  if (diff >= 3) return {cls:'up', sym:'↑'};
+  if (diff <= -3) return {cls:'down', sym:'↓'};
+  return {cls:'flat', sym:'→'};
+}
+function memberStatsRecs(m){
+  let recs = activeRecords().filter(r=>r.memberId===m.id);
+  if (ui.statsSlot!=='all') recs = recs.filter(r=>r.timeTag===ui.statsSlot);
+  return recs.sort((a,b)=>a.ts-b.ts);
+}
 function renderStats(){
   if (!activeMembers().length) return `<div class="empty">請先新增成員</div>`;
-  return activeMembers().map(m=>{
-    const recs = activeRecords().filter(r=>r.memberId===m.id).sort((a,b)=>a.ts-b.ts);
+  const slots = allSlots();
+  if (ui.statsSlot!=='all' && !slots.includes(ui.statsSlot)) ui.statsSlot = 'all';
+  const slotChips = slots.length ? `<div class="card"><h2>時段</h2><div class="chips">
+      <button class="chip ${ui.statsSlot==='all'?'on':''}" data-act="stats-slot" data-slot="all">全部</button>
+      ${slots.map(t=>`<button class="chip ${ui.statsSlot===t?'on':''}" data-act="stats-slot" data-slot="${escapeHtml(t)}">${escapeHtml(t)}</button>`).join('')}
+    </div></div>` : '';
+  const cards = activeMembers().map(m=>{
+    const dot = `<span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${m.color};margin-right:6px"></span>`;
+    const allRecs = activeRecords().filter(r=>r.memberId===m.id);
+    if (!allRecs.length){
+      return `<div class="card"><h2>${dot}${escapeHtml(m.name)}${memberDemoText(m)}</h2><div class="empty">尚無記錄</div></div>`;
+    }
+    const recs = memberStatsRecs(m);
     if (!recs.length){
-      return `<div class="card"><h2><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${m.color};margin-right:6px"></span>${escapeHtml(m.name)}${memberDemoText(m)}</h2><div class="empty">尚無記錄</div></div>`;
+      return `<div class="card"><h2>${dot}${escapeHtml(m.name)}${memberDemoText(m)}・${escapeHtml(ui.statsSlot)}</h2><div class="empty">這個時段還沒有記錄</div></div>`;
     }
     const sbps = recs.map(r=>r.sbp), dbps = recs.map(r=>r.dbp);
     const avg = arr => Math.round(arr.reduce((a,b)=>a+b,0)/arr.length);
     const last = recs[recs.length-1];
+    const slotLabel = ui.statsSlot==='all' ? '' : `・${escapeHtml(ui.statsSlot)}`;
+    let slotTable = '';
+    if (ui.statsSlot==='all'){
+      const rows = allSlots().map(t=>{
+        const rs = allRecs.filter(r=>r.timeTag===t).sort((a,b)=>a.ts-b.ts);
+        if (!rs.length) return '';
+        const tr = slotTrend(rs);
+        return `<div class="slot-row" data-act="stats-slot" data-slot="${escapeHtml(t)}">
+          <span class="nm">${escapeHtml(t)}</span>
+          <span class="cnt">${rs.length}筆</span>
+          <span class="v">${avg(rs.map(r=>r.sbp))}/${avg(rs.map(r=>r.dbp))}</span>
+          <span class="tr ${tr.cls}">${tr.sym}</span>
+        </div>`;
+      }).join('');
+      slotTable = `<div class="section-label" style="margin-top:4px">各時段平均(點一下只看該時段趨勢)</div>
+        <div class="slot-row head"><span class="nm">時段</span><span class="cnt">筆數</span><span class="v">平均</span><span class="tr">趨勢</span></div>
+        ${rows}
+        <div class="slot-note">趨勢:每個時段的記錄前半 vs 後半,收縮壓平均差 3 以上顯示 ↑/↓,需至少 4 筆。</div>`;
+    }
     return `<div class="card">
-      <h2><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${m.color};margin-right:6px"></span>${escapeHtml(m.name)}${memberDemoText(m)}(${recs.length} 筆)</h2>
+      <h2>${dot}${escapeHtml(m.name)}${memberDemoText(m)}${slotLabel}(${recs.length} 筆)</h2>
       <div class="stat-grid">
         <div class="stat"><div class="n">${last.sbp}/${last.dbp}</div><div class="l">最近一次</div></div>
         <div class="stat"><div class="n">${avg(sbps)}/${avg(dbps)}</div><div class="l">平均</div></div>
         <div class="stat"><div class="n">${Math.max(...sbps)}/${Math.max(...dbps)}</div><div class="l">最高</div></div>
       </div>
       ${elderlyNote(m.age) ? `<div class="elderly-note">${elderlyNote(m.age)}</div>` : ''}
-      <div class="legend"><span><span class="sw" style="background:var(--sbp)"></span>收縮壓</span><span><span class="sw" style="background:var(--dbp)"></span>舒張壓</span></div>
+      ${ui.statsSlot==='all'
+        ? `<div class="legend" style="flex-wrap:wrap;gap:6px 12px">${allSlots().filter(t=>allRecs.some(r=>r.timeTag===t)).map(t=>`<span><span class="sw" style="background:${slotColor(t)}"></span>${escapeHtml(t)}</span>`).join('')}</div><div class="slot-note" style="margin:0 0 4px">各時段的收縮壓走勢;選一個時段可同時看收縮壓+舒張壓</div>`
+        : `<div class="legend"><span><span class="sw" style="background:var(--sbp)"></span>收縮壓</span><span><span class="sw" style="background:var(--dbp)"></span>舒張壓</span></div>`}
       <canvas class="chart" id="chart-${m.id}"></canvas>
+      ${slotTable ? `<div style="margin-top:14px">${slotTable}</div>` : ''}
     </div>`;
   }).join('');
+  return slotChips + cards;
 }
 function drawAllCharts(){
   activeMembers().forEach(m=>{
     const cv = document.getElementById('chart-'+m.id);
     if (!cv) return;
-    const recs = activeRecords().filter(r=>r.memberId===m.id).sort((a,b)=>a.ts-b.ts).slice(-30);
-    drawChart(cv, recs);
+    if (ui.statsSlot==='all'){
+      const recs = memberStatsRecs(m);
+      const groups = allSlots().map(t=>({tag:t, recs:recs.filter(r=>r.timeTag===t).slice(-30)})).filter(g=>g.recs.length);
+      drawSlotChart(cv, groups);
+    } else {
+      drawChart(cv, memberStatsRecs(m).slice(-30));
+    }
   });
+}
+function drawSlotChart(canvas, groups){
+  const dpr = window.devicePixelRatio||1;
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width||300, h = 220;
+  canvas.width = w*dpr; canvas.height = h*dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr,dpr);
+  ctx.clearRect(0,0,w,h);
+  const all = groups.flatMap(g=>g.recs);
+  if (!all.length) return;
+  const pad = {l:34,r:10,t:14,b:22};
+  const vals = all.map(r=>r.sbp);
+  let vmin = Math.floor((Math.min(...vals)-8)/10)*10, vmax = Math.ceil((Math.max(...vals)+8)/10)*10;
+  const tmin = Math.min(...all.map(r=>r.ts)), tmax = Math.max(...all.map(r=>r.ts));
+  const cs = getComputedStyle(document.documentElement);
+  const cssInk2 = cs.getPropertyValue('--ink2').trim(), cssGrid = cs.getPropertyValue('--grid').trim();
+  const x = t => pad.l + (tmax===tmin ? (w-pad.l-pad.r)/2 : (w-pad.l-pad.r)*(t-tmin)/(tmax-tmin));
+  const y = v => h-pad.b - (h-pad.t-pad.b)*(v-vmin)/(vmax-vmin);
+  ctx.strokeStyle = cssGrid; ctx.fillStyle = cssInk2; ctx.font = '10px system-ui'; ctx.lineWidth = 1;
+  for (let gv=vmin; gv<=vmax; gv+=20){
+    const gy = y(gv);
+    ctx.beginPath(); ctx.moveTo(pad.l,gy); ctx.lineTo(w-pad.r,gy); ctx.stroke();
+    ctx.fillText(String(gv), 2, gy+3);
+  }
+  groups.forEach(g=>{
+    const c = slotColor(g.tag);
+    ctx.strokeStyle = c; ctx.fillStyle = c; ctx.lineWidth = 2; ctx.beginPath();
+    g.recs.forEach((r,i)=>{ const px=x(r.ts), py=y(r.sbp); if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); });
+    ctx.stroke();
+    g.recs.forEach(r=>{ ctx.beginPath(); ctx.arc(x(r.ts), y(r.sbp), 2.6, 0, 7); ctx.fill(); });
+  });
+  ctx.fillStyle = cssInk2;
+  for (let k=0; k<=3; k++){
+    const t = tmin + (tmax-tmin)*k/3, d = new Date(t);
+    ctx.fillText(`${d.getMonth()+1}/${d.getDate()}`, Math.min(w-30, Math.max(pad.l-10, x(t)-10)), h-6);
+  }
 }
 function drawChart(canvas, recs){
   const dpr = window.devicePixelRatio||1;
@@ -614,6 +723,7 @@ function bindTabEvents(){
     const act = t.dataset.act;
     if (act==='pick-member'){ ui.entry.memberId = t.dataset.id; render(); }
     else if (act==='pick-time'){ ui.entry.timeTag = t.dataset.tag; render(); }
+    else if (act==='stats-slot'){ ui.statsSlot = t.dataset.slot; render(); }
     else if (act==='step'){
       const key = t.dataset.key, d = parseInt(t.dataset.d,10);
       const min = key==='pulse'?30:(key==='dbp'?30:50);
