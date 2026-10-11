@@ -323,7 +323,7 @@ function scheduleSync(){
 
 function resetEntry(){
   const lastMember = state.members[0]?.id || null;
-  ui.entry = { memberId: lastMember, timeTag: guessTimeTag(), customTag:'', sbp:null, dbp:null, pulse:null, note:'', photo:null, ts: Date.now() };
+  ui.entry = { memberId: lastMember, timeTag: guessTimeTag(), customTag:'', sbp:DEFAULTS.sbp, dbp:DEFAULTS.dbp, pulse:DEFAULTS.pulse, note:'', photo:null, ts: Date.now() };
 }
 function tsToLocalInput(ts){
   const d = new Date(ts);
@@ -477,7 +477,7 @@ function stepperRow(label,key,val,unit,step){
   return `<div class="stepper" data-key="${key}">
     <div class="lbl">${label}<span class="unit">${unit}</span></div>
     <button class="btn" data-act="step" data-key="${key}" data-d="-1">−</button>
-    <div class="val"><input class="val-input" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="3" autocomplete="off" placeholder="--" data-key="${key}" value="${val==null?'':val}"></div>
+    <div class="val"><input class="val-input" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" placeholder="--" data-key="${key}" value="${val==null?'':val}"></div>
     <button class="btn" data-act="step" data-key="${key}" data-d="1">＋</button>
   </div>`;
 }
@@ -771,29 +771,38 @@ function bindTabEvents(){
     const key = inp.dataset.key;
     const digits = inp.value.replace(/\D/g,'').slice(0,3);
     if (digits !== inp.value) inp.value = digits;
-    ui.entry[key] = digits==='' ? null : parseInt(digits,10);
+    if (digits === '') return;
+    ui.entry[key] = parseInt(digits,10);
     updateCatLabel();
     const [min] = RANGES[key];
     const v = ui.entry[key];
     if (digits.length===3 || (digits.length===2 && v>=min)) focusNextValue(key);
   };
-  main.onfocusin = (ev)=>{
+  const onValFocusIn = (ev)=>{
     const inp = ev.target.closest && ev.target.closest('.val-input');
     if (!inp) return;
-    const fv = inp.value;
-    setTimeout(()=>{ if (inp.value===fv && document.activeElement===inp){ try{ inp.select(); }catch(e){} } }, 0);
+    inp.dataset.prev = inp.value;
+    inp.placeholder = inp.value || '--';
+    inp.value = '';
   };
-  main.onfocusout = (ev)=>{
+  const onValFocusOut = (ev)=>{
     const inp = ev.target.closest && ev.target.closest('.val-input');
     if (!inp) return;
-    const key = inp.dataset.key, v = ui.entry[key];
-    if (v!=null){
+    const key = inp.dataset.key;
+    if (inp.value === ''){
+      inp.value = inp.dataset.prev || (ui.entry[key]==null ? '' : ui.entry[key]);
+    } else {
       const [min,max] = RANGES[key];
-      const c = Math.max(min, Math.min(max, v));
+      const c = Math.max(min, Math.min(max, ui.entry[key]));
       ui.entry[key] = c; inp.value = c;
     }
     updateCatLabel();
   };
+  if (!main._valBound){
+    main._valBound = true;
+    main.addEventListener('focusin', onValFocusIn);
+    main.addEventListener('focusout', onValFocusOut);
+  }
   const note = document.getElementById('noteInput');
   if (note) note.oninput = ()=>{ ui.entry.note = note.value; };
   const tsInput = document.getElementById('tsInput');
