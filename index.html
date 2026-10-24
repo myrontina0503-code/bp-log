@@ -884,6 +884,11 @@ function renderSettings(){
     </div>
   </div>
   <div class="card">
+    <h2>版本</h2>
+    <div class="hint" style="margin-bottom:10px">目前版本 ${BUILD}。App 切回前景時會自動檢查新版;手機沒更新時可以按下面的按鈕。</div>
+    <div class="io-row"><button data-act="check-update">檢查更新</button><button data-act="force-reload">強制重新載入</button></div>
+  </div>
+  <div class="card">
     <h2>血壓分級參考(衛福部/AHA)</h2>
     <div class="hint">
       正常:&lt;120 / &lt;80　　血壓偏高:120-129 / &lt;80<br>
@@ -913,6 +918,8 @@ function bindTabEvents(){
     else if (act==='hk-import'){ document.getElementById('hkFile').click(); }
     else if (act==='hk-delete'){ hkDelete(); }
     else if (act==='hk-add'){ hkOpenAdd(); }
+    else if (act==='check-update'){ await checkUpdate(true); }
+    else if (act==='force-reload'){ await hardReload(); }
     else if (act==='hk-manual-del'){ hkManualDel(t.dataset.d); }
     else if (act==='step'){
       const key = t.dataset.key, d = parseInt(t.dataset.d,10);
@@ -1529,6 +1536,40 @@ document.getElementById('hkFile').addEventListener('change', async (e)=>{
   document.getElementById('dlgCancel').onclick = ()=> dlg.close();
   document.getElementById('dlgOk').onclick = ()=>{ const mid = document.getElementById('hkPick').value; dlg.close(); apply(mid); };
 });
+
+
+/* ---------- 版本檢查(回到 App 時自動偵測新版) ---------- */
+const BUILD = '20261024c';
+async function hardReload(){
+  try {
+    const regs = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(regs.map(r=>r.unregister()));
+    const ks = await caches.keys();
+    await Promise.all(ks.map(k=>caches.delete(k)));
+  } catch(e){}
+  location.reload();
+}
+function showUpdateBar(){
+  if (document.getElementById('updBar')) return;
+  const b = document.createElement('div');
+  b.id = 'updBar';
+  b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:50;background:var(--accent);color:var(--on-accent);padding:calc(10px + env(safe-area-inset-top)) 14px 10px;text-align:center;font-weight:800;font-size:14px;cursor:pointer';
+  b.textContent = '有新版本,點這裡更新';
+  b.onclick = hardReload;
+  document.body.appendChild(b);
+}
+async function checkUpdate(manual){
+  try {
+    const r = await fetch('index.html?x='+Date.now(), {cache:'no-store'});
+    const t = await r.text();
+    const m = /const BUILD = '([^']+)'/.exec(t);
+    if (m && m[1] !== BUILD){ showUpdateBar(); if (manual) alert('有新版本,請點上方藍色提示更新'); return true; }
+    if (manual) alert('已經是最新版本(' + BUILD + ')');
+  } catch(e){ if (manual) alert('檢查失敗,請確認網路連線'); }
+  return false;
+}
+document.addEventListener('visibilitychange', ()=>{ if (document.visibilityState==='visible') checkUpdate(false); });
+setTimeout(()=>checkUpdate(false), 3000);
 
 /* ---------- Boot ---------- */
 loadState().then(async ()=>{
