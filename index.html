@@ -296,18 +296,80 @@ async function fbPut(dbUrl, data){
   return res.ok;
 }
 let syncing = false;
+/* ---------- Apple Health inbox (iOS Shortcut pushes samples to /bp_inbox) ---------- */
+function parseHkDate(k){
+  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})$/.exec(String(k));
+  return m ? new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]).getTime() : null;
+}
+function firstNum(v){
+  const m = /-?\d+(\.\d+)?/.exec(String(v));
+  return m ? Math.round(parseFloat(m[0])) : null;
+}
+async function fbInboxGet(dbUrl){
+  const res = await fetch(dbUrl.trim().replace(/\/+$/,'') + '/bp_inbox.json', {cache:'no-store'});
+  if (!res.ok) return null;
+  return res.json();
+}
+async function fbInboxDelete(dbUrl, keys){
+  if (!keys.length) return;
+  const patch = {}; keys.forEach(k=>{ patch[k] = null; });
+  await fetch(dbUrl.trim().replace(/\/+$/,'') + '/bp_inbox.json', {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch)});
+}
+function importInbox(inbox){
+  const res = { added:0, skipped:0, unmatched:0, keys:[] };
+  if (!inbox) return res;
+  const entries = Object.entries(inbox).filter(([k,e])=>e && typeof e==='object');
+  res.keys = entries.map(([k])=>k);
+  const groups = new Map();
+  entries.forEach(([k,e])=>{
+    const ts = parseHkDate(e.d), v = firstNum(e.v);
+    if (ts==null || v==null) return;
+    const who = String(e.who||'').trim();
+    const gk = who+'|'+e.d;
+    if (!groups.has(gk)) groups.set(gk,{who, ts, d:e.d});
+    const g = groups.get(gk);
+    if (e.t==='s') g.sbp = v; else if (e.t==='d') g.dbp = v; else if (e.t==='h') g.pulse = v;
+  });
+  const members = activeMembers();
+  const pulses = [...groups.values()].filter(g=>g.pulse!=null && g.sbp==null);
+  [...groups.values()].forEach(g=>{
+    if (g.sbp==null || g.dbp==null) return;
+    const m = members.find(x=>x.name===g.who) || (members.length===1 && !g.who ? members[0] : null);
+    if (!m){ res.unmatched++; return; }
+    const id = 'hk_'+m.id+'_'+g.d;
+    if (state.records.some(r=>r.id===id)){ res.skipped++; return; }
+    if (g.pulse==null){
+      const near = pulses.filter(p=>p.who===g.who && Math.abs(p.ts-g.ts)<=180000).sort((a,b)=>Math.abs(a.ts-g.ts)-Math.abs(b.ts-g.ts))[0];
+      if (near) g.pulse = near.pulse;
+    }
+    const clampOk = g.sbp>=RANGES.sbp[0] && g.sbp<=RANGES.sbp[1] && g.dbp>=RANGES.dbp[0] && g.dbp<=RANGES.dbp[1];
+    if (!clampOk){ res.skipped++; return; }
+    state.records.push({ id, memberId:m.id, timeTag:guessTimeTag(new Date(g.ts).getHours()), sbp:g.sbp, dbp:g.dbp,
+      pulse: (g.pulse!=null && g.pulse>=RANGES.pulse[0] && g.pulse<=RANGES.pulse[1]) ? g.pulse : null,
+      note:'', photo:null, ts:g.ts, up:Date.now(), deleted:false, src:'health' });
+    res.added++;
+  });
+  return res;
+}
 async function doSync(alertOnFail){
   if (!syncCfg || !syncCfg.dbUrl || syncing) return;
   syncing = true;
   try {
     const remote = await fbGetRemote(syncCfg.dbUrl);
     state = mergeState(state, remote || {});
+    let imp = null;
+    try {
+      const inbox = await fbInboxGet(syncCfg.dbUrl);
+      imp = importInbox(inbox);
+      if (imp.keys.length && !imp.unmatched) await fbInboxDelete(syncCfg.dbUrl, imp.keys);
+      if (imp.added || imp.unmatched) { syncCfg.lastImport = { at: Date.now(), added: imp.added, unmatched: imp.unmatched }; }
+    } catch(e){ /* 收件匣失敗不影響一般同步 */ }
     await saveState();
     const putOk = await fbPut(syncCfg.dbUrl, state);
     if (!putOk) throw new Error('上傳失敗(金鑰沒有寫入權限)');
     syncCfg.lastSync = Date.now();
     await saveSyncCfg();
-    if (alertOnFail) alert('已同步!');
+    if (alertOnFail) alert('已同步!' + (imp && imp.added ? '\n從健康匯入 '+imp.added+' 筆' : '') + (imp && imp.unmatched ? '\n有 '+imp.unmatched+' 筆健康資料找不到對應成員(捷徑裡的姓名要和成員名稱完全一樣)' : ''));
   } catch(e){
     if (alertOnFail) alert('同步失敗:' + (e && e.message ? e.message : '請檢查網路連線') + '\n\n請確認同步金鑰正確。');
   } finally {
@@ -334,8 +396,8 @@ function localInputToTs(str){
   const t = new Date(str).getTime();
   return isNaN(t) ? Date.now() : t;
 }
-function guessTimeTag(){
-  const h = new Date().getHours();
+function guessTimeTag(hour){
+  const h = hour!=null ? hour : new Date().getHours();
   if (h < 9) return '早上起床';
   if (h < 11) return '早餐後';
   if (h < 14) return '午餐後';
@@ -494,7 +556,7 @@ function renderHistory(){
     return `<div class="rec" data-act="open-record" data-id="${r.id}">
       <span class="badge" style="background:${cat.color}"></span>
       <div class="main">
-        <div class="nums">${r.sbp}<span class="slash">/</span>${r.dbp}<span class="pulse">♥${r.pulse}</span></div>
+        <div class="nums">${r.sbp}<span class="slash">/</span>${r.dbp}<span class="pulse">${r.pulse!=null?'♥'+r.pulse:''}${r.src==='health'?' ・健康':''}</span></div>
         <div class="meta">${escapeHtml(m?m.name:'')} · ${r.timeTag} · ${fmtDate(r.ts)}${r.note?' · '+escapeHtml(r.note):''}</div>
       </div>
       ${thumb}
@@ -715,6 +777,14 @@ function renderSettings(){
     </div>
     ${syncCfg?.lastSync ? `<div class="hint" style="margin-top:8px">上次同步:${fmtDate(syncCfg.lastSync)}</div>` : ''}
   </div>
+  ${syncCfg?.dbUrl ? `<div class="card">
+    <h2>🍎 Apple 健康自動匯入</h2>
+    <div class="hint" style="margin-bottom:10px">用 iPhone「捷徑」每天把健康 App 裡的血壓送到雲端,這個 App 同步時會自動收進來。捷徑要用的網址:</div>
+    <input class="time-input" id="hkUrl" readonly value="${escapeHtml(syncCfg.dbUrl.trim().replace(/\/+$/,''))}/bp_inbox/" style="margin-bottom:8px;font-size:12px">
+    <div class="io-row"><button data-act="copy-hk-url">複製網址</button></div>
+    <div class="hint" style="margin-top:10px">捷徑裡「姓名」要和成員名稱完全一樣:${activeMembers().map(m=>'<b>'+escapeHtml(m.name)+'</b>').join('、')||'(尚無成員)'}</div>
+    ${syncCfg.lastImport ? `<div class="hint" style="margin-top:8px">上次匯入:${fmtDate(syncCfg.lastImport.at)},新增 ${syncCfg.lastImport.added} 筆${syncCfg.lastImport.unmatched?`,${syncCfg.lastImport.unmatched} 筆找不到成員`:''}</div>` : ''}
+  </div>` : ''}
   <div class="card">
     <h2>資料備份</h2>
     <div class="hint" style="margin-bottom:10px">記錄與照片都存在這台裝置的瀏覽器裡,清除瀏覽器資料會遺失。建議定期匯出備份。</div>
@@ -762,6 +832,11 @@ function bindTabEvents(){
     else if (act==='del-member'){ delMember(t.dataset.id); }
     else if (act==='export-json'){ exportJson(); }
     else if (act==='import-json'){ importJson(); }
+    else if (act==='copy-hk-url'){
+      const v = document.getElementById('hkUrl').value;
+      try { await navigator.clipboard.writeText(v); alert('已複製'); }
+      catch(e){ const i=document.getElementById('hkUrl'); i.select(); document.execCommand('copy'); alert('已複製'); }
+    }
     else if (act==='save-sync'){ await saveSyncKey(); }
     else if (act==='sync-now'){ await doSync(true); render(); }
   };
@@ -897,7 +972,7 @@ function openRecordDialog(id){
     <div class="stat-grid">
       <div class="stat"><div class="n">${r.sbp}</div><div class="l">收縮壓</div></div>
       <div class="stat"><div class="n">${r.dbp}</div><div class="l">舒張壓</div></div>
-      <div class="stat"><div class="n">${r.pulse}</div><div class="l">脈搏</div></div>
+      <div class="stat"><div class="n">${r.pulse!=null?r.pulse:'—'}</div><div class="l">脈搏</div></div>
     </div>
     <div class="hint">分級:<b style="color:${cat.color}">${cat.label}</b></div>
     <div class="hint">時間:${fmtDate(r.ts)}</div>
