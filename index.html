@@ -211,6 +211,19 @@ table.hk-t{width:100%;border-collapse:collapse;font-size:12px}
 .hk-t th{text-align:left;color:var(--muted);font-weight:600;padding:4px 2px}
 .hk-t td{padding:6px 2px;border-top:1px solid var(--hair);vertical-align:top}
 .hk-ref{font-size:12px;color:var(--muted);margin-bottom:8px}
+
+.pt-wrap{overflow-x:auto;margin:0 -4px}
+table.pt{border-collapse:collapse;font-size:12px;min-width:100%}
+.pt th{font-size:11px;color:var(--muted);font-weight:700;padding:6px 8px;text-align:right;white-space:nowrap}
+.pt td{padding:8px;text-align:right;border-top:1px solid var(--hair);font-variant-numeric:tabular-nums;white-space:nowrap;cursor:pointer}
+.pt th:first-child,.pt td:first-child{position:sticky;left:0;background:var(--surface);text-align:left;font-weight:700;color:var(--ink2);z-index:1}
+.pt td.H{color:var(--bad);font-weight:800}.pt td.L{color:var(--dbp);font-weight:800}.pt td.A{color:var(--warn);font-weight:800}
+.pt td.chg{color:var(--muted);font-size:11px}
+.next-box{background:var(--accent-soft);border-radius:12px;padding:10px 12px;margin-bottom:10px;font-size:13px;line-height:1.6}
+.next-box b{font-size:15px}
+.add-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.add-grid label{font-size:11px;color:var(--ink2);font-weight:700;display:block;margin-bottom:3px}
+.add-grid input{width:100%}
 </style>
 </head>
 <body>
@@ -504,6 +517,7 @@ function render(){
   else main.innerHTML = renderSettings();
   bindTabEvents();
   if (ui.tab==='stats') drawAllCharts();
+  if (ui.tab==='health') document.querySelectorAll('.pt-wrap').forEach(w=>{ w.scrollLeft = w.scrollWidth; });
 }
 
 /* ---------- Entry tab ---------- */
@@ -898,6 +912,8 @@ function bindTabEvents(){
     else if (act==='hk-checkup'){ hkOpenCheckup(parseInt(t.dataset.i,10)); }
     else if (act==='hk-import'){ document.getElementById('hkFile').click(); }
     else if (act==='hk-delete'){ hkDelete(); }
+    else if (act==='hk-add'){ hkOpenAdd(); }
+    else if (act==='hk-manual-del'){ hkManualDel(t.dataset.d); }
     else if (act==='step'){
       const key = t.dataset.key, d = parseInt(t.dataset.d,10);
       const [min,max] = RANGES[key];
@@ -1238,11 +1254,11 @@ function hkDefRef(key, member){
 function hkSeries(h, member){
   const S = new Map();
   const add = (key, name, cat, p)=>{ let s = S.get(key); if (!s){ s = {key, name, cat, pts:[]}; S.set(key, s); } s.pts.push(p); };
-  (h.labs||[]).forEach(l=>{
+  [...(h.labs||[]), ...(h.manual||[])].forEach(l=>{
     let k = hkKeyOf(l.item, l.order), name, cat;
     if (k){ [name, cat] = HK_DEF[k]; }
     else { k = 'X:' + l.item; name = String(l.item).replace(/\(.*$/, '') || l.item; cat = '其他'; }
-    add(k, name, cat, {d:l.d, raw:l.value, unit:l.unit, ref:l.ref, org:l.org, src:'健保署'});
+    add(k, name, cat, {d:l.d, raw:l.value, unit:l.unit, ref:l.ref, org:l.org, src: l.src==='manual' ? '手動輸入' : '健保署'});
   });
   (h.checkups||[]).forEach(c=>{
     (c.items||[]).forEach(it=>{
@@ -1314,6 +1330,92 @@ function hkRow(s){
     <span class="dd">${hkDate(s.last.d).slice(2)}</span>
   </div>`;
 }
+const HK_PANEL = [
+  {k:'TC',   item:'Total Cholesterol', unit:'mg/dl',  ref:'[50-200][]',   label:'總膽固醇'},
+  {k:'TG',   item:'Triglyceride',      unit:'mg/dl',  ref:'[50-150][]',   label:'三酸甘油脂'},
+  {k:'HDL',  item:'HDL-C',             unit:'mg/dl',  ref:'[＞40][]',      label:'HDL'},
+  {k:'LDL',  item:'LDL-C',             unit:'mg/dl',  ref:'[][＜130]',     label:'LDL'},
+  {k:'GLU',  item:'AC SUGAR',          unit:'mg/dl',  ref:'[70-100][]',   label:'空腹血糖'},
+  {k:'A1C',  item:'*HBA1c',            unit:'%',      ref:'[4-6][]',      label:'糖化血紅素'},
+  {k:'CREA', item:'Creatinine',        unit:'mg/dl',  ref:'[0.1-1.4][]',  label:'肌酸酐'},
+  {k:'ALT',  item:'S-GPT (ALT)',       unit:'U/L',    ref:'[5-42][]',     label:'ALT'},
+  {k:'TSH',  item:'TSH',               unit:'μIU/mL', ref:'[0.5-4.7][]',  label:'TSH'}
+];
+function hkPanelDates(S){
+  const cnt = new Map();
+  HK_PANEL.forEach(p=>{ const s = S.get(p.k); if (s) s.pts.forEach(q=>cnt.set(q.d, (cnt.get(q.d)||0)+1)); });
+  return [...cnt].filter(([d,c])=>c>=4).map(x=>x[0]).sort();
+}
+function hkAddMonths(d, n){
+  const t = new Date(d+'T00:00:00'); t.setMonth(t.getMonth()+n); return t;
+}
+function hkPanelCard(S, h){
+  const all = hkPanelDates(S);
+  const manual = (h.manual||[]);
+  const mDates = [...new Set(manual.map(x=>x.d))].sort().reverse();
+  let nextBox = '';
+  if (all.length){
+    const last = all[all.length-1], nx = hkAddMonths(last, 3);
+    const days = Math.round((nx - new Date(new Date().toDateString())) / 86400000);
+    const nxs = nx.getFullYear()+'/'+String(nx.getMonth()+1).padStart(2,'0')+'/'+String(nx.getDate()).padStart(2,'0');
+    nextBox = `<div class="next-box">上次抽血 <b>${hkDate(last)}</b><br>每 3 個月一次,下次約 <b>${nxs}</b>${days>=0 ? '(還有 '+days+' 天)' : '<span style="color:var(--bad)">(已超過 '+(-days)+' 天)</span>'}</div>`;
+  }
+  const ds = all.slice(-6);
+  let table = '<div class="hint">還沒有足夠的抽血資料可以比較</div>';
+  if (ds.length){
+    const head = ds.map(d=>`<th>${d.slice(2).replace(/-/g,'/')}</th>`).join('');
+    const rows = HK_PANEL.map(p=>{
+      const s = S.get(p.k); if (!s) return '';
+      const vals = ds.map(d=>s.pts.find(z=>z.d===d));
+      const nums = vals.filter(q=>q && q.num).map(q=>q.num.n);
+      let chg = '';
+      if (nums.length >= 2){ const df = nums[nums.length-1] - nums[nums.length-2]; chg = df===0 ? '→' : (df>0?'▲':'▼') + Math.abs(Math.round(df*100)/100); }
+      const cells = vals.map(q=> q ? `<td class="${q.st}" data-act="hk-item" data-key="${p.k}">${escapeHtml(hkDisp(q.raw,8))}</td>` : `<td data-act="hk-item" data-key="${p.k}" style="color:var(--base)">—</td>`).join('');
+      return `<tr><td data-act="hk-item" data-key="${p.k}">${p.label}</td>${cells}<td class="chg">${chg}</td></tr>`;
+    }).join('');
+    table = `<div class="pt-wrap"><table class="pt"><tr><th>項目</th>${head}<th>較上次</th></tr>${rows}</table></div>
+      <div class="hint" style="font-size:11px;margin-top:6px">紅字偏高、藍字偏低,點一下看完整趨勢。「較上次」是最近兩次的差。</div>`;
+  }
+  const mlist = mDates.length ? `<div class="section-label" style="margin-top:12px">手動輸入的記錄</div>` + mDates.map(d=>`<div class="hk-row" style="cursor:default"><span class="nm" style="flex:1 1 auto">${hkDate(d)}・${manual.filter(x=>x.d===d).length} 項</span><button class="del" data-act="hk-manual-del" data-d="${d}" style="color:var(--danger);font-size:12px;font-weight:700;padding:4px 8px">刪除</button></div>`).join('') : '';
+  return `<div class="card"><h2>抽血追蹤(每季對照)</h2>${nextBox}${table}
+    <div class="io-row" style="margin-top:10px"><button data-act="hk-add">＋ 新增這次的抽血結果</button></div>${mlist}</div>`;
+}
+function hkOpenAdd(){
+  const m = memberById(ui.hkMember); if (!m) return;
+  const today = new Date(); const pad = n=>String(n).padStart(2,'0');
+  const td = today.getFullYear()+'-'+pad(today.getMonth()+1)+'-'+pad(today.getDate());
+  const dlg = document.getElementById('dlg');
+  document.getElementById('dlgBody').innerHTML = `<div class="dlg-title">新增抽血結果・${escapeHtml(m.name)}</div>
+    <label style="font-size:11px;color:var(--ink2);font-weight:700">抽血日期</label>
+    <input type="date" id="hkAddDate" class="time-input" value="${td}" style="margin:3px 0 4px">
+    <div class="hint" style="font-size:11px">有的項目沒檢驗就留空。</div>
+    <div class="add-grid">${HK_PANEL.map(p=>`<div><label>${p.label} <span style="color:var(--muted);font-weight:600">${p.unit}</span></label><input class="time-input hk-in" data-k="${p.k}" inputmode="decimal" placeholder="${hkRefText(p.ref)}"></div>`).join('')}</div>
+    <div class="dlg-actions"><button class="cancel" id="dlgCancel">取消</button><button class="ok" id="dlgOk">儲存</button></div>`;
+  dlg.showModal();
+  document.getElementById('dlgCancel').onclick = ()=> dlg.close();
+  document.getElementById('dlgOk').onclick = async ()=>{
+    const d = document.getElementById('hkAddDate').value;
+    if (!d){ alert('請選抽血日期'); return; }
+    const add = [];
+    for (const inp of document.querySelectorAll('.hk-in')){
+      const v = inp.value.trim().replace(',', '.'); if (v==='') continue;
+      if (!hkIsNum(v)){ alert('「'+inp.closest('div').querySelector('label').textContent.trim()+'」要填數字'); return; }
+      const p = HK_PANEL.find(x=>x.k===inp.dataset.k);
+      add.push({d, org:'手動輸入', item:p.item, value:v, unit:p.unit, ref:p.ref, order:'', src:'manual'});
+    }
+    if (!add.length){ alert('至少填一個項目'); return; }
+    const hh = health[m.id] || (health[m.id] = {labs:[], checkups:[], vaccines:[], screenings:[], source:'', importedAt:null});
+    hh.manual = (hh.manual||[]).filter(x=>x.d!==d).concat(add);
+    await idbSet('health', health);
+    dlg.close(); render();
+  };
+}
+function hkManualDel(d){
+  const m = memberById(ui.hkMember), h = m && health[m.id]; if (!h) return;
+  confirmDialog('確定刪除 '+hkDate(d)+' 手動輸入的抽血結果?', async ()=>{
+    h.manual = (h.manual||[]).filter(x=>x.d!==d); await idbSet('health', health); render();
+  });
+}
 function renderHealth(){
   const ms = activeMembers();
   if (!ms.length) return `<div class="empty">請先到「設定」新增成員</div>`;
@@ -1323,7 +1425,7 @@ function renderHealth(){
   const importCard = `<div class="card"><h2>匯入健保存摺資料</h2>
     <div class="hint" style="margin-bottom:10px">到健保署「健康存摺」下載檔案後,請 Claude 整理成「健保存摺整理.json」,再傳到手機(AirDrop 或 iCloud 雲碟)選取匯入。資料<b>只存在這支手機</b>,不會同步給其他家人。重新匯入會整份取代。</div>
     <div class="io-row"><button data-act="hk-import">選擇檔案匯入</button>${h ? '<button data-act="hk-delete" style="color:var(--danger)">刪除健檢資料</button>' : ''}</div></div>`;
-  if (!h) return chips + `<div class="card"><div class="empty" style="padding:22px 8px">${escapeHtml(m.name)} 還沒有健檢資料</div></div>` + importCard;
+  if (!h) return chips + `<div class="card"><div class="empty" style="padding:22px 8px">${escapeHtml(m.name)} 還沒有健檢資料</div><div class="io-row"><button data-act="hk-add">＋ 直接輸入抽血結果</button></div></div>` + importCard;
 
   const S = hkSeries(h, m), bp = hkBpSeries(S);
   const all = [...S.values()];
@@ -1340,8 +1442,9 @@ function renderHealth(){
   return chips + `
   <div class="card">
     <h2>${escapeHtml(m.name)} 的健檢資料</h2>
-    <div class="hint">檢驗 ${(h.labs||[]).length} 筆・${dates.size} 個檢查日・最近一次 ${hkDate(latest)}<br>匯入於 ${fmtDate(h.importedAt)}</div>
+    <div class="hint">檢驗 ${(h.labs||[]).length + (h.manual||[]).length} 筆・${dates.size} 個檢查日・最近一次 ${hkDate(latest)}<br>${h.importedAt ? '匯入於 '+fmtDate(h.importedAt) : '尚未匯入健保存摺'}</div>
   </div>
+  ${hkPanelCard(S, h)}
   <div class="card">
     <h2>需要留意(最近一次超出參考範圍)</h2>
     ${flagged.length ? flagged.map(hkRow).join('') : '<div class="hint">最近一次的檢驗都在參考範圍內</div>'}
@@ -1412,7 +1515,7 @@ document.getElementById('hkFile').addEventListener('change', async (e)=>{
   const ms = activeMembers();
   if (!ms.length){ alert('請先到「設定」新增成員'); return; }
   const apply = async (mid)=>{
-    health[mid] = {labs:data.labs, checkups:data.checkups||[], vaccines:data.vaccines||[], screenings:data.screenings||[], source:data.source||'', importedAt:Date.now()};
+    health[mid] = {labs:data.labs, checkups:data.checkups||[], vaccines:data.vaccines||[], screenings:data.screenings||[], manual:(health[mid]&&health[mid].manual)||[], source:data.source||'', importedAt:Date.now()};
     await idbSet('health', health);
     ui.hkMember = mid; ui.tab = 'health'; render();
     alert('已匯入 '+data.labs.length+' 筆檢驗資料');
