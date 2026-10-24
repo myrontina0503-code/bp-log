@@ -1,5 +1,5 @@
 /* 血壓記錄 PWA service worker:一律繞過 HTTP 快取直接問網路拿最新版,離線才用本地快取 */
-const CACHE = 'bp-log-v1';
+const CACHE = 'bp-log-v2';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 
 async function refreshCache() {
