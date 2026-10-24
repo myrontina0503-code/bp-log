@@ -305,7 +305,7 @@ function parseHkDate(k){
   return m ? new Date(+m[1],+m[2]-1,+m[3],+m[4],+m[5],+m[6]).getTime() : null;
 }
 function firstNum(v){
-  const m = /-?\d+(\.\d+)?/.exec(String(v));
+  const m = /-?\d+(\.\d+)?/.exec(String(v).replace(/(\d)[,，](?=\d{3})/g,'$1'));
   return m ? Math.round(parseFloat(m[0])) : null;
 }
 async function fbInboxGet(dbUrl){
