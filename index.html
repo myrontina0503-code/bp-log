@@ -189,6 +189,28 @@ dialog::backdrop { background: rgba(0,0,0,.4); }
 .dlg-photo { width:100%; border-radius: 10px; margin-bottom: 12px; display:block; }
 
 canvas.chart { width:100%; height: 220px; display:block; }
+
+.hk-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.hk-card{background:var(--sunken);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px;cursor:pointer;min-width:0}
+.hk-n{font-size:11px;color:var(--ink2);font-weight:700;line-height:1.25}
+.hk-v{font-size:19px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.2;word-break:break-all}
+.hk-u{font-size:10px;color:var(--muted);font-weight:600;margin-left:3px;display:inline-block;word-break:normal}
+.hk-d{font-size:10px;color:var(--muted)}
+.hk-spark{width:100%;height:auto;display:block;margin:3px 0}
+.st{display:inline-block;font-size:10px;font-weight:800;padding:1px 7px;border-radius:999px;color:#fff;align-self:flex-start;white-space:nowrap}
+.st.H{background:var(--bad)} .st.L{background:var(--dbp)} .st.A{background:var(--warn)} .st.N{background:var(--ok)}
+details.hk{border-top:1px solid var(--hair)}
+details.hk summary{padding:11px 2px;font-weight:700;font-size:14px;cursor:pointer;list-style:none;display:flex;justify-content:space-between;align-items:center}
+details.hk summary::-webkit-details-marker{display:none}
+details.hk summary .c{color:var(--muted);font-weight:600;font-size:12px}
+.hk-row{display:flex;align-items:center;flex-wrap:wrap;gap:2px 8px;padding:9px 2px;border-top:1px solid var(--hair);font-size:13px;cursor:pointer}
+.hk-row .nm{flex:1 1 100%;min-width:0;font-weight:600}
+.hk-row .vv{font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hk-row .dd{color:var(--muted);font-size:11px;margin-left:auto;flex:none}
+table.hk-t{width:100%;border-collapse:collapse;font-size:12px}
+.hk-t th{text-align:left;color:var(--muted);font-weight:600;padding:4px 2px}
+.hk-t td{padding:6px 2px;border-top:1px solid var(--hair);vertical-align:top}
+.hk-ref{font-size:12px;color:var(--muted);margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -202,10 +224,12 @@ canvas.chart { width:100%; height: 220px; display:block; }
     <button data-tab="entry" class="on"><span class="ic">✚</span>記錄</button>
     <button data-tab="history"><span class="ic">☰</span>歷史</button>
     <button data-tab="stats"><span class="ic">📈</span>統計</button>
+    <button data-tab="health"><span class="ic">🩺</span>健檢</button>
     <button data-tab="settings"><span class="ic">⚙</span>設定</button>
   </div>
 </div>
 <dialog id="dlg"><div class="dlg-body" id="dlgBody"></div></dialog>
+<input type="file" id="hkFile" accept=".json,application/json" style="display:none">
 <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none">
 <script>
 'use strict';
@@ -476,6 +500,7 @@ function render(){
   if (ui.tab==='entry') main.innerHTML = renderEntry();
   else if (ui.tab==='history') main.innerHTML = renderHistory();
   else if (ui.tab==='stats') main.innerHTML = renderStats();
+  else if (ui.tab==='health') main.innerHTML = renderHealth();
   else main.innerHTML = renderSettings();
   bindTabEvents();
   if (ui.tab==='stats') drawAllCharts();
@@ -868,6 +893,11 @@ function bindTabEvents(){
     if (act==='pick-member'){ ui.entry.memberId = t.dataset.id; render(); }
     else if (act==='pick-time'){ ui.entry.timeTag = t.dataset.tag; render(); }
     else if (act==='stats-slot'){ ui.statsSlot = t.dataset.slot; render(); }
+    else if (act==='hk-member'){ ui.hkMember = t.dataset.id; render(); }
+    else if (act==='hk-item'){ hkOpenItem(t.dataset.key); }
+    else if (act==='hk-checkup'){ hkOpenCheckup(parseInt(t.dataset.i,10)); }
+    else if (act==='hk-import'){ document.getElementById('hkFile').click(); }
+    else if (act==='hk-delete'){ hkDelete(); }
     else if (act==='step'){
       const key = t.dataset.key, d = parseInt(t.dataset.d,10);
       const [min,max] = RANGES[key];
@@ -1115,8 +1145,291 @@ document.querySelector('.tabbar').addEventListener('click', (e)=>{
   mq.addEventListener?.('change', ()=>{});
 })();
 
+
+/* ---------- 健檢(健保存摺匯入,只存本機,不同步) ---------- */
+let health = {};
+const HK_CAT_ORDER = ['身體測量','血脂','血糖','腎功能','肝功能','甲狀腺','血液常規','電解質','發炎免疫','心臟','尿液','其他'];
+const HK_DEF = {
+  HT:['身高','身體測量'], WT:['體重','身體測量'], BMI:['BMI','身體測量'], WAIST:['腰圍','身體測量'], SBP:['收縮壓(健檢)','身體測量'], DBP:['舒張壓(健檢)','身體測量'],
+  LDL:['低密度膽固醇 LDL','血脂'], HDL:['高密度膽固醇 HDL','血脂'], TC:['總膽固醇','血脂'], TG:['三酸甘油脂','血脂'],
+  GLU:['空腹血糖','血糖'], RGLU:['隨機血糖','血糖'], A1C:['糖化血紅素 HbA1c','血糖'],
+  CREA:['肌酸酐','腎功能'], EGFR:['腎絲球過濾率 eGFR','腎功能'], EGFR2:['eGFR(MDRD 舊公式)','腎功能'], UA:['尿酸','腎功能'],
+  ALT:['ALT (GPT)','肝功能'], AST:['AST (GOT)','肝功能'], TBIL:['總膽紅素','肝功能'],
+  TSH:['TSH 甲促素','甲狀腺'], FT4:['Free T4 游離甲狀腺素','甲狀腺'], T3:['T3','甲狀腺'], ATPO:['Anti-TPO 抗體','甲狀腺'], ATSHR:['Anti-TSHR 抗體','甲狀腺'],
+  WBC:['白血球 WBC','血液常規'], RBC:['紅血球 RBC','血液常規'], HGB:['血紅素 HGB','血液常規'], HCT:['血球容積 HCT','血液常規'], PLT:['血小板 PLT','血液常規'],
+  MCV:['MCV','血液常規'], MCH:['MCH','血液常規'], MCHC:['MCHC','血液常規'], RDW:['RDW','血液常規'], SEG:['嗜中性球 SEG','血液常規'], LYM:['淋巴球 LYM','血液常規'], MONO:['單核球 MONO','血液常規'], EO:['嗜酸性球 EO','血液常規'], BASO:['嗜鹼性球 BASO','血液常規'], NRBC:['有核紅血球 NRBC','血液常規'],
+  K:['鉀','電解質'], NA:['鈉','電解質'],
+  CRP:['CRP','發炎免疫'], HSCRP:['高敏感度 CRP','發炎免疫'], ESR:['血沉 ESR','發炎免疫'], ANA:['ANA 抗核抗體','發炎免疫'], ANAP:['ANA 型態','發炎免疫'], RF:['類風濕因子 RF','發炎免疫'],
+  BNP:['NT-proBNP','心臟'],
+  UAPP:['尿 外觀','尿液'], UBIL:['尿 膽紅素','尿液'], UCAST:['尿 圓柱體','尿液'], UCRY:['尿 結晶','尿液'], UKET:['尿 酮體','尿液'], UOB:['尿 潛血','尿液'], UPRO:['尿 蛋白','尿液'], USUG:['尿 糖','尿液'], USG:['尿 比重','尿液'], UPH:['尿 酸鹼值','尿液'], UWBC:['尿 白血球','尿液'], UURO:['尿 尿膽素原','尿液']
+};
+const HK_KEY = ['BP','LDL','HDL','TC','TG','GLU','A1C','TSH','FT4','CREA','ALT','WT','BMI','WAIST'];
+const HK_CK_MAP = {'身高':'HT','體重':'WT','BMI(身體質量指數)':'BMI','腰圍':'WAIST','收縮壓':'SBP','舒張壓':'DBP','總膽固醇(TC)':'TC','三酸甘油酯(TG)':'TG','高密度脂蛋白膽固醇(HDL)':'HDL','低密度脂蛋白膽固醇(LDL)':'LDL','飯前血糖':'GLU','肌酸酐':'CREA','腎絲球過濾率':'EGFR','SGOT(AST或GOT)':'AST','SGPT(ALT或GPT)':'ALT'};
+
+function hkKeyOf(item, order){
+  const n = String(item||'').trim(), L = n.toLowerCase();
+  if (/尿一般檢查/.test(order||'')){
+    const t = L.replace(/^u-/,'');
+    const m = {appearance:'UAPP',bilirubin:'UBIL',cast:'UCAST',crystal:'UCRY',ketones:'UKET','occult blood':'UOB',protein:'UPRO',sugar:'USUG','specific gravity':'USG',ph:'UPH',wbc:'UWBC',urobilinogen:'UURO'};
+    if (m[t]) return m[t];
+  }
+  const R = [[/^ldl/,'LDL'],[/^hdl/,'HDL'],[/total cholesterol/,'TC'],[/triglyceride/,'TG'],[/^ac sugar/,'GLU'],[/glucose random/,'RGLU'],[/hba1c/,'A1C'],
+    [/^creatinine/,'CREA'],[/egfr ckd/,'EGFR'],[/egfr mdrd/,'EGFR2'],[/uric acid/,'UA'],[/^(s-gpt|alt)/,'ALT'],[/^(ast|s-got)/,'AST'],[/total bilirubin/,'TBIL'],
+    [/^tsh/,'TSH'],[/^free-?t4/,'FT4'],[/^t3$/,'T3'],[/anti-tpo/,'ATPO'],[/anti-tshr/,'ATSHR'],
+    [/^wbc$/,'WBC'],[/^rbc$/,'RBC'],[/^hgb$/,'HGB'],[/^hct$/,'HCT'],[/^plt$/,'PLT'],[/^mcv$/,'MCV'],[/^mchc$/,'MCHC'],[/^mch$/,'MCH'],[/^rdw$/,'RDW'],[/^seg$/,'SEG'],[/^lym$/,'LYM'],[/^mono$/,'MONO'],[/^eo$/,'EO'],[/^baso$/,'BASO'],[/^nrbc$/,'NRBC'],
+    [/^k\(/,'K'],[/^na\(/,'NA'],[/high sensitiv/,'HSCRP'],[/^crp/,'CRP'],[/^esr/,'ESR'],[/ana pattern/,'ANAP'],[/^ana\(/,'ANA'],[/^ra factor/,'RF'],[/nt-pro bnp/,'BNP']];
+  for (const [re,k] of R) if (re.test(L)) return k;
+  return null;
+}
+function hkIsNum(s){ return /^-?\d+(\.\d+)?$/.test(s); }
+function hkParseRef(ref){
+  const m = /\[([^\]]*)\]\s*\[([^\]]*)\]/.exec(ref||'');
+  if (!m) return {};
+  const a = m[1].trim(), b = m[2].trim();
+  const num = x => { const q = /(-?\d+(\.\d+)?)/.exec(x); return q ? parseFloat(q[1]) : null; };
+  let lo = null, hi = null, text = null;
+  const rg = /^(-?\d+(?:\.\d+)?)\s*-\s*(-?\d+(?:\.\d+)?)$/.exec(a);
+  if (rg){ lo = parseFloat(rg[1]); hi = parseFloat(rg[2]); }
+  else {
+    if (/^[＞>]/.test(a)) lo = num(a);
+    else if (hkIsNum(a) && b !== '') lo = parseFloat(a);
+    if (/^[＜<]/.test(b)) hi = num(b);
+    else if (/^[＞>]/.test(b)) { if (lo == null) lo = num(b); }
+    else if (hkIsNum(b)) hi = parseFloat(b);
+    if (lo == null && hi == null) text = a || b;
+  }
+  return {lo, hi, text};
+}
+function hkRefText(ref){
+  const r = hkParseRef(ref);
+  if (r.lo != null && r.hi != null) return r.lo + ' – ' + r.hi;
+  if (r.hi != null) return '< ' + r.hi;
+  if (r.lo != null) return '> ' + r.lo;
+  return r.text && r.text !== 'N/A' ? r.text : '';
+}
+function hkNum(raw){
+  const m = /^\s*([＜<＞>]?)\s*(-?\d+(?:\.\d+)?)\s*$/.exec(String(raw||'').replace(/,/g,''));
+  return m ? {n: parseFloat(m[2]), cmp: m[1]} : null;
+}
+function hkStatus(key, raw, ref){
+  const r = hkParseRef(ref), v = hkNum(raw);
+  if (v){
+    if (r.hi != null && v.n > r.hi) return 'H';
+    if (r.lo != null && v.n < r.lo) return 'L';
+    return (r.hi != null || r.lo != null) ? 'N' : '?';
+  }
+  const t = String(raw||'').toLowerCase(), rt = (r.text||'').toLowerCase();
+  if (rt === 'normal') return t.includes('normal') ? 'N' : 'A';
+  if (rt === '-' || rt === 'negative'){
+    if (/\+|positive/.test(t)) return 'A';
+    const q = /(\d+)\s*-\s*(\d+)/.exec(t);
+    if (key === 'UWBC' && q && +q[2] > 5) return 'A';
+    return 'N';
+  }
+  if (rt === 'yellow') return t.includes('yellow') ? 'N' : 'A';
+  return '?';
+}
+function hkDefRef(key, member){
+  if (key === 'BMI') return '[18.5-24][]';
+  if (key === 'WAIST') return member && member.gender==='F' ? '[0-80][]' : member && member.gender==='M' ? '[0-90][]' : '';
+  if (key === 'EGFR') return '[60][>60]';
+  return '';
+}
+function hkSeries(h, member){
+  const S = new Map();
+  const add = (key, name, cat, p)=>{ let s = S.get(key); if (!s){ s = {key, name, cat, pts:[]}; S.set(key, s); } s.pts.push(p); };
+  (h.labs||[]).forEach(l=>{
+    let k = hkKeyOf(l.item, l.order), name, cat;
+    if (k){ [name, cat] = HK_DEF[k]; }
+    else { k = 'X:' + l.item; name = String(l.item).replace(/\(.*$/, '') || l.item; cat = '其他'; }
+    add(k, name, cat, {d:l.d, raw:l.value, unit:l.unit, ref:l.ref, org:l.org, src:'健保署'});
+  });
+  (h.checkups||[]).forEach(c=>{
+    (c.items||[]).forEach(it=>{
+      const k = HK_CK_MAP[it.name]; if (!k || it.value === '') return;
+      const [name, cat] = HK_DEF[k];
+      add(k, name, cat, {d:c.d, raw:it.value, unit: it.unit==='吋或公分' ? 'cm' : it.unit, ref:'', org:c.org, src:'成人預防保健'});
+    });
+  });
+  S.forEach(s=>{
+    s.pts.sort((a,b)=> a.d<b.d ? -1 : a.d>b.d ? 1 : 0);
+    const seen = new Set();
+    s.pts = s.pts.filter(p=>{ if (seen.has(p.d)) return false; seen.add(p.d); return true; });
+    let fr = ''; s.pts.forEach(p=>{ if (p.ref) fr = p.ref; });
+    s.fallbackRef = fr || hkDefRef(s.key, member);
+    s.pts.forEach(p=>{ p.st = hkStatus(s.key, p.raw, p.ref || s.fallbackRef); p.num = hkNum(p.raw); });
+    s.last = s.pts[s.pts.length-1];
+    s.unit = String(s.last.unit||'').replace(/^\*/, '').replace('N/A','');
+  });
+  return S;
+}
+function hkColor(st){ return st==='H' ? 'var(--bad)' : st==='L' ? 'var(--dbp)' : st==='A' ? 'var(--warn)' : st==='N' ? 'var(--ok)' : 'var(--muted)'; }
+function hkChip(st){ const t = {H:'偏高', L:'偏低', A:'異常', N:'正常'}[st]; return t ? `<span class="st ${st}">${t}</span>` : ''; }
+function hkDate(d){ return d ? d.replace(/-/g,'/') : ''; }
+function hkDisp(raw, max){ let t = String(raw||'').replace('＜','<').replace('＞','>'); max = max||16; return t.length>max ? t.slice(0,max-2)+'…' : t; }
+function hkSpark(pts, ref, color){
+  const nums = pts.map(p=>p.num ? p.num.n : null), valid = nums.filter(x=>x!=null);
+  if (!valid.length) return '';
+  const r = hkParseRef(ref);
+  let lo = Math.min(...valid), hi = Math.max(...valid);
+  if (r.lo != null) lo = Math.min(lo, r.lo);
+  if (r.hi != null) hi = Math.max(hi, r.hi);
+  if (hi === lo){ hi += 1; lo -= 1; }
+  const W = 160, H = 40, pad = 4;
+  const x = i => pts.length===1 ? W/2 : pad + (W-2*pad)*i/(pts.length-1);
+  const y = v => H - pad - (H-2*pad)*(v-lo)/(hi-lo);
+  let band = '';
+  if (r.lo != null || r.hi != null){
+    const top = y(r.hi != null ? Math.min(r.hi, hi) : hi), bot = y(r.lo != null ? Math.max(r.lo, lo) : lo);
+    band = `<rect x="0" y="${top.toFixed(1)}" width="${W}" height="${Math.max(1, bot-top).toFixed(1)}" fill="var(--ok)" opacity=".16"/>`;
+  }
+  const xy = []; nums.forEach((v,i)=>{ if (v!=null) xy.push([x(i), y(v)]); });
+  const line = xy.length > 1 ? `<polyline points="${xy.map(q=>q[0].toFixed(1)+','+q[1].toFixed(1)).join(' ')}" fill="none" stroke="${color}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"/>` : '';
+  const dots = xy.map((q,i)=>`<circle cx="${q[0].toFixed(1)}" cy="${q[1].toFixed(1)}" r="${i===xy.length-1 ? 3 : 2}" fill="${color}"/>`).join('');
+  return `<svg viewBox="0 0 ${W} ${H}" class="hk-spark">${band}${line}${dots}</svg>`;
+}
+function hkBpSeries(S){
+  const sb = S.get('SBP'), db = S.get('DBP');
+  if (!sb || !db) return null;
+  const pts = [];
+  sb.pts.forEach(p=>{ const q = db.pts.find(z=>z.d===p.d); if (q && p.num && q.num){ const c = bpCategory(p.num.n, q.num.n); pts.push({d:p.d, raw:p.num.n+'/'+q.num.n, num:{n:p.num.n}, sbp:p.num.n, dbp:q.num.n, cat:c, org:p.org, src:p.src, st: c.label==='正常' ? 'N' : 'H'}); } });
+  if (!pts.length) return null;
+  return {key:'BP', name:'血壓(健檢量測)', cat:'身體測量', pts, last:pts[pts.length-1], unit:'mmHg', fallbackRef:'[0][130]'};
+}
+function hkCard(s){
+  const st = s.last.st, col = hkColor(st);
+  const chip = s.key==='BP' ? `<span class="st ${st}" style="background:${s.last.cat.color}">${s.last.cat.label}</span>` : hkChip(st);
+  return `<div class="hk-card" data-act="hk-item" data-key="${escapeHtml(s.key)}">
+    <div class="hk-n">${escapeHtml(s.name)}</div>
+    <div class="hk-v">${escapeHtml(hkDisp(s.last.raw))}<span class="hk-u">${escapeHtml(s.unit)}</span></div>
+    ${chip}${hkSpark(s.pts, s.fallbackRef, col)}
+    <div class="hk-d">${hkDate(s.last.d)}${s.pts.length>1 ? '・'+s.pts.length+' 次' : ''}</div>
+  </div>`;
+}
+function hkRow(s){
+  return `<div class="hk-row" data-act="hk-item" data-key="${escapeHtml(s.key)}">
+    <span class="nm">${escapeHtml(s.name)}</span>
+    <span class="vv">${escapeHtml(hkDisp(s.last.raw))}<span class="hk-u">${escapeHtml(s.unit)}</span></span>
+    ${hkChip(s.last.st)}
+    <span class="dd">${hkDate(s.last.d).slice(2)}</span>
+  </div>`;
+}
+function renderHealth(){
+  const ms = activeMembers();
+  if (!ms.length) return `<div class="empty">請先到「設定」新增成員</div>`;
+  if (!ui.hkMember || !ms.find(m=>m.id===ui.hkMember)) ui.hkMember = (ms.find(m=>health[m.id]) || ms[0]).id;
+  const m = memberById(ui.hkMember), h = health[m.id];
+  const chips = ms.length > 1 ? `<div class="card"><h2>成員</h2><div class="mrow">${ms.map(x=>`<button class="mchip ${x.id===m.id?'on':''}" style="--m-color:${x.color}" data-act="hk-member" data-id="${x.id}"><span class="dot"></span>${escapeHtml(x.name)}</button>`).join('')}</div></div>` : '';
+  const importCard = `<div class="card"><h2>匯入健保存摺資料</h2>
+    <div class="hint" style="margin-bottom:10px">到健保署「健康存摺」下載檔案後,請 Claude 整理成「健保存摺整理.json」,再傳到手機(AirDrop 或 iCloud 雲碟)選取匯入。資料<b>只存在這支手機</b>,不會同步給其他家人。重新匯入會整份取代。</div>
+    <div class="io-row"><button data-act="hk-import">選擇檔案匯入</button>${h ? '<button data-act="hk-delete" style="color:var(--danger)">刪除健檢資料</button>' : ''}</div></div>`;
+  if (!h) return chips + `<div class="card"><div class="empty" style="padding:22px 8px">${escapeHtml(m.name)} 還沒有健檢資料</div></div>` + importCard;
+
+  const S = hkSeries(h, m), bp = hkBpSeries(S);
+  const all = [...S.values()];
+  const dates = new Set(); all.forEach(s=>s.pts.forEach(p=>dates.add(p.d)));
+  const latest = [...dates].sort().slice(-1)[0];
+  const flagged = all.filter(s=>['H','L','A'].includes(s.last.st) && !['SBP','DBP'].includes(s.key)).sort((a,b)=> a.last.d<b.last.d ? 1 : -1);
+  const keyCards = HK_KEY.map(k => k==='BP' ? bp : S.get(k)).filter(Boolean);
+  const cats = HK_CAT_ORDER.map(c=>({c, items: all.filter(s=>s.cat===c).sort((a,b)=>a.name<b.name?-1:1)})).filter(x=>x.items.length);
+
+  const ck = (h.checkups||[]).slice().sort((a,b)=>a.d<b.d?1:-1);
+  const vac = (h.vaccines||[]).slice().sort((a,b)=>a.d<b.d?1:-1);
+  const scr = (h.screenings||[]).slice().sort((a,b)=>(b.d||'')<(a.d||'')?-1:1);
+
+  return chips + `
+  <div class="card">
+    <h2>${escapeHtml(m.name)} 的健檢資料</h2>
+    <div class="hint">檢驗 ${(h.labs||[]).length} 筆・${dates.size} 個檢查日・最近一次 ${hkDate(latest)}<br>匯入於 ${fmtDate(h.importedAt)}</div>
+  </div>
+  <div class="card">
+    <h2>需要留意(最近一次超出參考範圍)</h2>
+    ${flagged.length ? flagged.map(hkRow).join('') : '<div class="hint">最近一次的檢驗都在參考範圍內</div>'}
+    <div class="hint" style="margin-top:8px;font-size:11px">依各檢驗單位的參考值判斷,僅供記錄參考,非診斷;是否需要處理請詢問醫師。</div>
+  </div>
+  <div class="card">
+    <h2>重點指標(點一下看歷次數值)</h2>
+    <div class="hk-grid">${keyCards.map(hkCard).join('')}</div>
+  </div>
+  <div class="card">
+    <h2>全部檢驗項目</h2>
+    ${cats.map(x=>`<details class="hk"><summary><span>${x.c}</span><span class="c">${x.items.length} 項 ›</span></summary>${x.items.map(hkRow).join('')}</details>`).join('')}
+  </div>
+  <div class="card">
+    <h2>成人預防保健</h2>
+    ${ck.length ? ck.map((c,i)=>`<div class="hk-row" data-act="hk-checkup" data-i="${(h.checkups||[]).indexOf(c)}"><span class="nm">${hkDate(c.d)}・${escapeHtml(c.org)}</span><span class="dd">查看 ›</span></div>`).join('') : '<div class="hint">無資料</div>'}
+  </div>
+  <div class="card">
+    <h2>預防接種</h2>
+    ${vac.length ? vac.map(v=>`<div class="hk-row" style="cursor:default"><span class="nm">${escapeHtml(v.name)}</span><span class="dd">${hkDate(v.d)}</span></div>`).join('') : '<div class="hint">無資料</div>'}
+  </div>
+  <div class="card">
+    <h2>癌症篩檢</h2>
+    ${scr.length ? scr.map(v=>`<div class="hk-row" style="cursor:default;flex-wrap:wrap"><span class="nm" style="flex:1 1 auto">${escapeHtml(v.kind)}</span><span class="dd">${v.d ? hkDate(v.d) : ''}</span><span style="flex-basis:100%;font-size:11px;color:var(--muted)">${escapeHtml(v.org||'')}${v.org?'・':''}${escapeHtml(v.result||'')}</span></div>`).join('') : '<div class="hint">無資料</div>'}
+  </div>` + importCard;
+}
+function hkOpen(html){
+  const dlg = document.getElementById('dlg');
+  document.getElementById('dlgBody').innerHTML = html + '<div class="dlg-actions"><button class="cancel" id="dlgClose">關閉</button></div>';
+  dlg.showModal();
+  document.getElementById('dlgClose').onclick = ()=> dlg.close();
+}
+function hkOpenItem(key){
+  const m = memberById(ui.hkMember), h = health[ui.hkMember]; if (!h) return;
+  const S = hkSeries(h, m), s = key==='BP' ? hkBpSeries(S) : S.get(key); if (!s) return;
+  const refTxt = key==='BP' ? '正常:< 120 / < 80' : hkRefText(s.fallbackRef);
+  const rows = s.pts.slice().reverse().map(p=>{
+    const chip = key==='BP' ? `<span class="st ${p.st}" style="background:${p.cat.color}">${p.cat.label}</span>` : hkChip(p.st);
+    return `<tr><td>${hkDate(p.d)}</td><td style="font-weight:800;white-space:nowrap">${escapeHtml(hkDisp(p.raw,40))}${chip?' ':''}${chip}</td><td style="color:var(--muted)">${escapeHtml(p.org||'')}<br>${escapeHtml(p.src||'')}</td></tr>`;
+  }).join('');
+  hkOpen(`<div class="dlg-title">${escapeHtml(s.name)}</div>
+    ${refTxt ? `<div class="hk-ref">參考範圍:${escapeHtml(refTxt)} ${escapeHtml(s.unit)}</div>` : ''}
+    ${hkSpark(s.pts, s.fallbackRef, hkColor(s.last.st))}
+    <table class="hk-t"><tr><th>日期</th><th>數值</th><th>來源</th></tr>${rows}</table>`);
+}
+function hkOpenCheckup(i){
+  const h = health[ui.hkMember]; const c = h && (h.checkups||[])[i]; if (!c) return;
+  let grp = '';
+  const rows = (c.items||[]).filter(it=>it.value!=='' || it.name==='結果').map(it=>{
+    const head = it.group !== grp ? `<tr><td colspan="2" style="padding-top:10px;font-weight:800">${escapeHtml(it.group)}</td></tr>` : '';
+    grp = it.group;
+    const bad = /異常/.test(it.value);
+    return head + `<tr><td>${escapeHtml(it.name)}</td><td style="font-weight:700;${bad?'color:var(--bad)':''}">${escapeHtml(it.value)} <span style="color:var(--muted);font-weight:600">${escapeHtml(it.unit.replace('吋或公分','cm'))}</span></td></tr>`;
+  }).join('');
+  hkOpen(`<div class="dlg-title">成人預防保健 ${hkDate(c.d)}</div><div class="hk-ref">${escapeHtml(c.org)}</div><table class="hk-t">${rows}</table>`);
+}
+async function hkDelete(){
+  const m = memberById(ui.hkMember); if (!m || !health[m.id]) return;
+  confirmDialog('確定刪除「'+m.name+'」的健檢資料?(原始 JSON 檔還在,可以再匯入)', async ()=>{
+    delete health[m.id]; await idbSet('health', health); render();
+  });
+}
+document.getElementById('hkFile').addEventListener('change', async (e)=>{
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  let data;
+  try { data = JSON.parse(await f.text()); if (!Array.isArray(data.labs)) throw new Error('bad'); }
+  catch(err){ alert('檔案格式不正確,請選「健保存摺整理.json」'); return; }
+  const ms = activeMembers();
+  if (!ms.length){ alert('請先到「設定」新增成員'); return; }
+  const apply = async (mid)=>{
+    health[mid] = {labs:data.labs, checkups:data.checkups||[], vaccines:data.vaccines||[], screenings:data.screenings||[], source:data.source||'', importedAt:Date.now()};
+    await idbSet('health', health);
+    ui.hkMember = mid; ui.tab = 'health'; render();
+    alert('已匯入 '+data.labs.length+' 筆檢驗資料');
+  };
+  if (ms.length === 1) return apply(ms[0].id);
+  const dlg = document.getElementById('dlg');
+  document.getElementById('dlgBody').innerHTML = `<div class="dlg-title">這份資料是誰的?</div>
+    <select id="hkPick" class="time-input">${ms.map(m=>`<option value="${m.id}" ${m.id===ui.hkMember?'selected':''}>${escapeHtml(m.name)}</option>`).join('')}</select>
+    <div class="dlg-actions"><button class="cancel" id="dlgCancel">取消</button><button class="ok" id="dlgOk">匯入</button></div>`;
+  dlg.showModal();
+  document.getElementById('dlgCancel').onclick = ()=> dlg.close();
+  document.getElementById('dlgOk').onclick = ()=>{ const mid = document.getElementById('hkPick').value; dlg.close(); apply(mid); };
+});
+
 /* ---------- Boot ---------- */
 loadState().then(async ()=>{
+  try { health = (await idbGet('health')) || {}; } catch(e){ health = {}; }
   render();
   await loadSyncCfg();
   if (syncCfg && syncCfg.dbUrl){
