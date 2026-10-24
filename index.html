@@ -252,10 +252,12 @@ let syncCfg = null;
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7); }
 function activeMembers(){ return state.members.filter(m=>!m.deleted); }
 function activeRecords(){ return state.records.filter(r=>!r.deleted); }
+function memberSteps(mid){ return (state.steps||[]).filter(x=>x.memberId===mid).sort((a,b)=>a.day<b.day?-1:1); }
 
 async function loadState(){
   const s = await idbGet(KEY);
   state = (s && s.members) ? s : { members: [], records: [] };
+  state.steps = state.steps || [];
   if (!ui.entry) resetEntry();
 }
 let saveTimer=null;
@@ -282,6 +284,7 @@ function mergeState(local, remote){
   return {
     members: mergeArr(local.members, remote && remote.members),
     records: mergeArr(local.records, remote && remote.records),
+    steps: mergeArr(local.steps, remote && remote.steps),
   };
 }
 async function fbGetRemote(dbUrl){
@@ -316,12 +319,26 @@ async function fbInboxDelete(dbUrl, keys){
   await fetch(dbUrl.trim().replace(/\/+$/,'') + '/bp_inbox.json', {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify(patch)});
 }
 function importInbox(inbox){
-  const res = { added:0, skipped:0, unmatched:0, keys:[] };
+  const res = { added:0, skipped:0, unmatched:0, steps:0, keys:[] };
   if (!inbox) return res;
   const entries = Object.entries(inbox).filter(([k,e])=>e && typeof e==='object');
   res.keys = entries.map(([k])=>k);
   const groups = new Map();
   entries.forEach(([k,e])=>{
+    if (e.t==='w'){
+      const dm = /^(\d{4})(\d{2})(\d{2})$/.exec(String(e.d)), n = firstNum(e.v);
+      if (!dm || n==null || n<0 || n>200000) return;
+      const who = String(e.who||'').trim();
+      const ms = activeMembers();
+      const m = ms.find(x=>x.name===who) || (ms.length===1 && !who ? ms[0] : null);
+      if (!m){ res.unmatched++; return; }
+      const day = dm[1]+'-'+dm[2]+'-'+dm[3], id = 'st_'+m.id+'_'+dm[1]+dm[2]+dm[3];
+      state.steps = state.steps || [];
+      const ex = state.steps.find(x=>x.id===id);
+      if (!ex){ state.steps.push({id, memberId:m.id, day, n, up:Date.now()}); res.steps++; }
+      else if (ex.n!==n){ ex.n = n; ex.up = Date.now(); res.steps++; }
+      return;
+    }
     const ts = parseHkDate(e.d), v = firstNum(e.v);
     if (ts==null || v==null) return;
     const who = String(e.who||'').trim();
@@ -362,14 +379,14 @@ async function doSync(alertOnFail){
       const inbox = await fbInboxGet(syncCfg.dbUrl);
       imp = importInbox(inbox);
       if (imp.keys.length && !imp.unmatched) await fbInboxDelete(syncCfg.dbUrl, imp.keys);
-      if (imp.added || imp.unmatched) { syncCfg.lastImport = { at: Date.now(), added: imp.added, unmatched: imp.unmatched }; }
+      if (imp.added || imp.steps || imp.unmatched) { syncCfg.lastImport = { at: Date.now(), added: imp.added, steps: imp.steps, unmatched: imp.unmatched }; }
     } catch(e){ /* 收件匣失敗不影響一般同步 */ }
     await saveState();
     const putOk = await fbPut(syncCfg.dbUrl, state);
     if (!putOk) throw new Error('上傳失敗(金鑰沒有寫入權限)');
     syncCfg.lastSync = Date.now();
     await saveSyncCfg();
-    if (alertOnFail) alert('已同步!' + (imp && imp.added ? '\n從健康匯入 '+imp.added+' 筆' : '') + (imp && imp.unmatched ? '\n有 '+imp.unmatched+' 筆健康資料找不到對應成員(捷徑裡的姓名要和成員名稱完全一樣)' : ''));
+    if (alertOnFail) alert('已同步!' + (imp && imp.added ? '\n從健康匯入血壓 '+imp.added+' 筆' : '') + (imp && imp.steps ? '\n更新步數 '+imp.steps+' 天' : '') + (imp && imp.unmatched ? '\n有 '+imp.unmatched+' 筆健康資料找不到對應成員(捷徑裡的姓名要和成員名稱完全一樣)' : ''));
   } catch(e){
     if (alertOnFail) alert('同步失敗:' + (e && e.message ? e.message : '請檢查網路連線') + '\n\n請確認同步金鑰正確。');
   } finally {
@@ -604,7 +621,7 @@ function renderStats(){
     const dot = `<span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${m.color};margin-right:6px"></span>`;
     const allRecs = activeRecords().filter(r=>r.memberId===m.id);
     if (!allRecs.length){
-      return `<div class="card"><h2>${dot}${escapeHtml(m.name)}${memberDemoText(m)}</h2><div class="empty">尚無記錄</div></div>`;
+      return `<div class="card"><h2>${dot}${escapeHtml(m.name)}${memberDemoText(m)}</h2><div class="empty">尚無血壓記錄</div>${stepsBlock(m)}</div>`;
     }
     const recs = memberStatsRecs(m);
     if (!recs.length){
@@ -645,12 +662,46 @@ function renderStats(){
         : `<div class="legend"><span><span class="sw" style="background:var(--sbp)"></span>收縮壓</span><span><span class="sw" style="background:var(--dbp)"></span>舒張壓</span></div>`}
       <canvas class="chart" id="chart-${m.id}"></canvas>
       ${slotTable ? `<div style="margin-top:14px">${slotTable}</div>` : ''}
+      ${stepsBlock(m)}
     </div>`;
   }).join('');
   return slotChips + cards;
 }
+function stepsBlock(m){
+  const st = memberSteps(m.id);
+  if (!st.length) return '';
+  const last7 = st.slice(-7), avg7 = Math.round(last7.reduce((a,x)=>a+x.n,0)/last7.length);
+  const best = st.reduce((a,x)=>x.n>a.n?x:a, st[0]);
+  return `<div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--hair)">
+    <div class="section-label" style="margin-bottom:4px">每日步數(來自 Apple 健康)</div>
+    <div class="hint" style="margin-bottom:6px">近 ${last7.length} 天平均 <b style="color:var(--ink)">${avg7.toLocaleString()}</b> 步・最多 ${best.n.toLocaleString()} 步(${best.day.slice(5).replace('-','/')})</div>
+    <canvas class="chart" id="steps-${m.id}" style="height:150px"></canvas>
+  </div>`;
+}
+function drawStepsChart(canvas, st){
+  const dpr = window.devicePixelRatio||1, rect = canvas.getBoundingClientRect();
+  const w = rect.width||300, h = 150;
+  canvas.width = w*dpr; canvas.height = h*dpr;
+  const ctx = canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  const data = st.slice(-14); if (!data.length) return;
+  const cs = getComputedStyle(document.documentElement);
+  const ink2 = cs.getPropertyValue('--ink2').trim(), grid = cs.getPropertyValue('--grid').trim(), col = cs.getPropertyValue('--pulse').trim();
+  const pad = {l:36,r:6,t:10,b:20};
+  const maxV = Math.max(4000, Math.ceil(Math.max(...data.map(x=>x.n))/2000)*2000);
+  const y = v => h-pad.b-(h-pad.t-pad.b)*v/maxV;
+  ctx.font='10px system-ui'; ctx.lineWidth=1; ctx.strokeStyle=grid; ctx.fillStyle=ink2;
+  for (let g=0; g<=maxV; g+=maxV/2){ ctx.beginPath(); ctx.moveTo(pad.l,y(g)); ctx.lineTo(w-pad.r,y(g)); ctx.stroke(); ctx.fillText(g>=1000?(g/1000)+'k':String(g), 2, y(g)+3); }
+  const bw = (w-pad.l-pad.r)/data.length;
+  data.forEach((x,i)=>{
+    ctx.fillStyle = col; const bh = h-pad.b-y(x.n);
+    ctx.fillRect(pad.l+i*bw+bw*0.15, y(x.n), bw*0.7, bh);
+    if (i%Math.max(1,Math.round(data.length/5))===0 || i===data.length-1){ ctx.fillStyle=ink2; ctx.fillText(x.day.slice(8).replace(/^0/,''), pad.l+i*bw+bw*0.2, h-6); }
+  });
+}
 function drawAllCharts(){
   activeMembers().forEach(m=>{
+    const sc = document.getElementById('steps-'+m.id);
+    if (sc) drawStepsChart(sc, memberSteps(m.id));
     const cv = document.getElementById('chart-'+m.id);
     if (!cv) return;
     if (ui.statsSlot==='all'){
@@ -783,7 +834,7 @@ function renderSettings(){
     <input class="time-input" id="hkUrl" readonly value="${escapeHtml(syncCfg.dbUrl.trim().replace(/\/+$/,''))}/bp_inbox/" style="margin-bottom:8px;font-size:12px">
     <div class="io-row"><button data-act="copy-hk-url">複製網址</button></div>
     <div class="hint" style="margin-top:10px">捷徑裡「姓名」要和成員名稱完全一樣:${activeMembers().map(m=>'<b>'+escapeHtml(m.name)+'</b>').join('、')||'(尚無成員)'}</div>
-    ${syncCfg.lastImport ? `<div class="hint" style="margin-top:8px">上次匯入:${fmtDate(syncCfg.lastImport.at)},新增 ${syncCfg.lastImport.added} 筆${syncCfg.lastImport.unmatched?`,${syncCfg.lastImport.unmatched} 筆找不到成員`:''}</div>` : ''}
+    ${syncCfg.lastImport ? `<div class="hint" style="margin-top:8px">上次匯入:${fmtDate(syncCfg.lastImport.at)},血壓 ${syncCfg.lastImport.added} 筆${syncCfg.lastImport.steps?`、步數 ${syncCfg.lastImport.steps} 天`:''}${syncCfg.lastImport.unmatched?`,${syncCfg.lastImport.unmatched} 筆找不到成員`:''}</div>` : ''}
   </div>` : ''}
   <div class="card">
     <h2>資料備份</h2>
@@ -1031,7 +1082,7 @@ function importJson(){
       const data = JSON.parse(text);
       if (!data.members || !data.records) throw new Error('格式不符');
       confirmDialog('匯入會覆蓋目前裝置上的所有記錄,確定嗎?', async ()=>{
-        state = data;
+        state = data; state.steps = state.steps || [];
         await saveState();
         render();
         scheduleSync();
