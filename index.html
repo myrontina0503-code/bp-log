@@ -918,6 +918,8 @@ function bindTabEvents(){
     else if (act==='hk-import'){ document.getElementById('hkFile').click(); }
     else if (act==='hk-delete'){ hkDelete(); }
     else if (act==='hk-add'){ hkOpenAdd(); }
+    else if (act==='hk-visit'){ hkOpenVisit(parseInt(t.dataset.i,10)); }
+    else if (act==='hk-visits-toggle'){ ui.hkVisitsAll = !ui.hkVisitsAll; render(); }
     else if (act==='check-update'){ await checkUpdate(true); }
     else if (act==='force-reload'){ await hardReload(); }
     else if (act==='hk-manual-del'){ hkManualDel(t.dataset.d); }
@@ -982,6 +984,8 @@ function bindTabEvents(){
     main.addEventListener('focusin', onValFocusIn);
     main.addEventListener('focusout', onValFocusOut);
   }
+  const hkInt = document.getElementById('hkInt');
+  if (hkInt) hkInt.onchange = async ()=>{ const m2 = memberById(ui.hkMember); if (m2 && health[m2.id]){ health[m2.id].interval = parseInt(hkInt.value,10); await idbSet('health', health); render(); } };
   const note = document.getElementById('noteInput');
   if (note) note.oninput = ()=>{ ui.entry.note = note.value; };
   const tsInput = document.getElementById('tsInput');
@@ -1183,9 +1187,10 @@ const HK_DEF = {
   MCV:['MCV','血液常規'], MCH:['MCH','血液常規'], MCHC:['MCHC','血液常規'], RDW:['RDW','血液常規'], SEG:['嗜中性球 SEG','血液常規'], LYM:['淋巴球 LYM','血液常規'], MONO:['單核球 MONO','血液常規'], EO:['嗜酸性球 EO','血液常規'], BASO:['嗜鹼性球 BASO','血液常規'], NRBC:['有核紅血球 NRBC','血液常規'],
   K:['鉀','電解質'], NA:['鈉','電解質'],
   CRP:['CRP','發炎免疫'], HSCRP:['高敏感度 CRP','發炎免疫'], ESR:['血沉 ESR','發炎免疫'], ANA:['ANA 抗核抗體','發炎免疫'], ANAP:['ANA 型態','發炎免疫'], RF:['類風濕因子 RF','發炎免疫'],
-  BNP:['NT-proBNP','心臟'],
+  BNP:['NT-proBNP','心臟'], BUN:['尿素氮 BUN','腎功能'], T4:['T4 甲狀腺素','甲狀腺'], ALP:['鹼性磷酸脢 ALP','肝功能'], LIP:['解脂酶 Lipase','其他'], PPG:['餐後血糖','血糖'],
   UAPP:['尿 外觀','尿液'], UBIL:['尿 膽紅素','尿液'], UCAST:['尿 圓柱體','尿液'], UCRY:['尿 結晶','尿液'], UKET:['尿 酮體','尿液'], UOB:['尿 潛血','尿液'], UPRO:['尿 蛋白','尿液'], USUG:['尿 糖','尿液'], USG:['尿 比重','尿液'], UPH:['尿 酸鹼值','尿液'], UWBC:['尿 白血球','尿液'], UURO:['尿 尿膽素原','尿液']
 };
+const HK_UNIT = {PPG:'mg/dl',TC:'mg/dl',TG:'mg/dl',HDL:'mg/dl',LDL:'mg/dl',GLU:'mg/dl',RGLU:'mg/dl',CREA:'mg/dl',BUN:'mg/dl',UA:'mg/dl',TBIL:'mg/dl',A1C:'%',ALT:'U/L',AST:'U/L',ALP:'U/L',K:'mmol/L',NA:'mmol/L',TSH:'μIU/mL',FT4:'ng/dL',T3:'ng/dL',T4:'μg/dL',WBC:'10^3/uL',RBC:'10^6/uL',HGB:'g/dL',HCT:'%',PLT:'10^3/uL',MCV:'fl',MCH:'pg',MCHC:'g/dL',RDW:'%',SEG:'%',LYM:'%',MONO:'%',EO:'%',BASO:'%',NRBC:'%',EGFR:'mL/min/1.73m²',EGFR2:'mL/min/1.73m²'};
 const HK_KEY = ['BP','LDL','HDL','TC','TG','GLU','A1C','TSH','FT4','CREA','ALT','WT','BMI','WAIST'];
 const HK_CK_MAP = {'身高':'HT','體重':'WT','BMI(身體質量指數)':'BMI','腰圍':'WAIST','收縮壓':'SBP','舒張壓':'DBP','總膽固醇(TC)':'TC','三酸甘油酯(TG)':'TG','高密度脂蛋白膽固醇(HDL)':'HDL','低密度脂蛋白膽固醇(LDL)':'LDL','飯前血糖':'GLU','肌酸酐':'CREA','腎絲球過濾率':'EGFR','SGOT(AST或GOT)':'AST','SGPT(ALT或GPT)':'ALT'};
 
@@ -1201,7 +1206,12 @@ function hkKeyOf(item, order){
     [/^tsh/,'TSH'],[/^free-?t4/,'FT4'],[/^t3$/,'T3'],[/anti-tpo/,'ATPO'],[/anti-tshr/,'ATSHR'],
     [/^wbc$/,'WBC'],[/^rbc$/,'RBC'],[/^hgb$/,'HGB'],[/^hct$/,'HCT'],[/^plt$/,'PLT'],[/^mcv$/,'MCV'],[/^mchc$/,'MCHC'],[/^mch$/,'MCH'],[/^rdw$/,'RDW'],[/^seg$/,'SEG'],[/^lym$/,'LYM'],[/^mono$/,'MONO'],[/^eo$/,'EO'],[/^baso$/,'BASO'],[/^nrbc$/,'NRBC'],
     [/^k\(/,'K'],[/^na\(/,'NA'],[/high sensitiv/,'HSCRP'],[/^crp/,'CRP'],[/^esr/,'ESR'],[/ana pattern/,'ANAP'],[/^ana\(/,'ANA'],[/^ra factor/,'RF'],[/nt-pro bnp/,'BNP']];
+  const R2 = [[/^glucose ac/,'GLU'],[/estimated gfr/,'EGFR'],[/^(bun|血中尿素氮)/,'BUN'],[/肌酸酐/,'CREA'],[/^t4$/,'T4'],[/^(alk-p|鹼性磷)/,'ALP'],[/總膽紅素/,'TBIL'],
+    [/血清麩胺酸丙酮酸/,'ALT'],[/血清麩胺酸苯醋酸/,'AST'],[/^鈉$/,'NA'],[/^鉀$/,'K'],[/^na\(/,'NA'],
+    [/^(hemoglobin|血色素)/,'HGB'],[/^(platelets|血小板)/,'PLT'],[/^(hematocrit|血球比容)/,'HCT'],[/紅血球色素濃度/,'MCHC'],[/^紅血球色素$/,'MCH'],[/紅血球平均容積/,'MCV'],[/白血球計數/,'WBC'],[/紅血球分佈/,'RDW'],[/^紅血球計數/,'RBC'],
+    [/^(segment|嗜中性)/,'SEG'],[/^(nucleated rbc|有核紅血球)/,'NRBC'],[/^(monocyte|單核球)/,'MONO'],[/^(lymphocyte|淋巴球)/,'LYM'],[/^(eosinophil|嗜伊紅)/,'EO'],[/^(basophil|嗜鹼性白血球)/,'BASO'],[/lipase|解脂/,'LIP'],[/alkaline phosphatase/,'ALP'],[/c反應|ｃ反應|c-reactive/,'CRP'],[/^(葡萄糖|sugar)$/,'PPG']];
   for (const [re,k] of R) if (re.test(L)) return k;
+  for (const [re,k] of R2) if (re.test(L)) return k;
   return null;
 }
 function hkIsNum(s){ return /^-?\d+(\.\d+)?$/.test(s); }
@@ -1265,7 +1275,7 @@ function hkSeries(h, member){
     let k = hkKeyOf(l.item, l.order), name, cat;
     if (k){ [name, cat] = HK_DEF[k]; }
     else { k = 'X:' + l.item; name = String(l.item).replace(/\(.*$/, '') || l.item; cat = '其他'; }
-    add(k, name, cat, {d:l.d, raw:l.value, unit:l.unit, ref:l.ref, org:l.org, src: l.src==='manual' ? '手動輸入' : '健保署'});
+    add(k, name, cat, {d:l.d, raw:l.value, unit:l.unit || HK_UNIT[k] || '', ref:l.ref, org:l.org, src: l.src==='manual' ? '手動輸入' : '健保署'});
   });
   (h.checkups||[]).forEach(c=>{
     (c.items||[]).forEach(it=>{
@@ -1361,11 +1371,20 @@ function hkPanelCard(S, h){
   const manual = (h.manual||[]);
   const mDates = [...new Set(manual.map(x=>x.d))].sort().reverse();
   let nextBox = '';
-  if (all.length){
-    const last = all[all.length-1], nx = hkAddMonths(last, 3);
+  let iv = h.interval;
+  if (iv == null){
+    iv = 0;
+    if (all.length >= 3){
+      const gaps = []; for (let i=1;i<all.length;i++) gaps.push((new Date(all[i]) - new Date(all[i-1]))/86400000);
+      const rec = gaps.slice(-4).sort((a,b)=>a-b);
+      if (rec[Math.floor(rec.length/2)] <= 150) iv = 3;
+    }
+  }
+  if (all.length && iv > 0){
+    const last = all[all.length-1], nx = hkAddMonths(last, iv);
     const days = Math.round((nx - new Date(new Date().toDateString())) / 86400000);
     const nxs = nx.getFullYear()+'/'+String(nx.getMonth()+1).padStart(2,'0')+'/'+String(nx.getDate()).padStart(2,'0');
-    nextBox = `<div class="next-box">上次抽血 <b>${hkDate(last)}</b><br>每 3 個月一次,下次約 <b>${nxs}</b>${days>=0 ? '(還有 '+days+' 天)' : '<span style="color:var(--bad)">(已超過 '+(-days)+' 天)</span>'}</div>`;
+    nextBox = `<div class="next-box">上次抽血 <b>${hkDate(last)}</b><br>每 ${iv} 個月一次,下次約 <b>${nxs}</b>${days>=0 ? '(還有 '+days+' 天)' : '<span style="color:var(--bad)">(已超過 '+(-days)+' 天)</span>'}</div>`;
   }
   const ds = all.slice(-6);
   let table = '<div class="hint">還沒有足夠的抽血資料可以比較</div>';
@@ -1384,8 +1403,9 @@ function hkPanelCard(S, h){
       <div class="hint" style="font-size:11px;margin-top:6px">紅字偏高、藍字偏低,點一下看完整趨勢。「較上次」是最近兩次的差。</div>`;
   }
   const mlist = mDates.length ? `<div class="section-label" style="margin-top:12px">手動輸入的記錄</div>` + mDates.map(d=>`<div class="hk-row" style="cursor:default"><span class="nm" style="flex:1 1 auto">${hkDate(d)}・${manual.filter(x=>x.d===d).length} 項</span><button class="del" data-act="hk-manual-del" data-d="${d}" style="color:var(--danger);font-size:12px;font-weight:700;padding:4px 8px">刪除</button></div>`).join('') : '';
-  return `<div class="card"><h2>抽血追蹤(每季對照)</h2>${nextBox}${table}
-    <div class="io-row" style="margin-top:10px"><button data-act="hk-add">＋ 新增這次的抽血結果</button></div>${mlist}</div>`;
+  const ivSel = `<div style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px"><span style="color:var(--ink2);font-weight:700">追蹤週期</span><select id="hkInt" class="time-input" style="width:auto;padding:6px 10px">${[[0,'不提醒'],[1,'每 1 個月'],[2,'每 2 個月'],[3,'每 3 個月'],[4,'每 4 個月'],[6,'每 6 個月']].map(([v,t])=>`<option value="${v}" ${v===iv?'selected':''}>${t}</option>`).join('')}</select></div>`;
+  return `<div class="card"><h2>抽血追蹤(對照表)</h2>${nextBox}${table}
+    <div class="io-row" style="margin-top:10px"><button data-act="hk-add">＋ 新增這次的抽血結果</button></div>${ivSel}${mlist}</div>`;
 }
 function hkOpenAdd(){
   const m = memberById(ui.hkMember); if (!m) return;
@@ -1430,7 +1450,7 @@ function renderHealth(){
   const m = memberById(ui.hkMember), h = health[m.id];
   const chips = ms.length > 1 ? `<div class="card"><h2>成員</h2><div class="mrow">${ms.map(x=>`<button class="mchip ${x.id===m.id?'on':''}" style="--m-color:${x.color}" data-act="hk-member" data-id="${x.id}"><span class="dot"></span>${escapeHtml(x.name)}</button>`).join('')}</div></div>` : '';
   const importCard = `<div class="card"><h2>匯入健保存摺資料</h2>
-    <div class="hint" style="margin-bottom:10px">到健保署「健康存摺」下載檔案後,請 Claude 整理成「健保存摺整理.json」,再傳到手機(AirDrop 或 iCloud 雲碟)選取匯入。資料<b>只存在這支手機</b>,不會同步給其他家人。重新匯入會整份取代。</div>
+    <div class="hint" style="margin-bottom:10px">在手機的「健保快易通」→ 健康存摺,下載「醫療類」JSON 檔,存到「檔案」後選取匯入(不需要整理)。資料<b>只存在這支手機</b>,不會同步給其他家人。重新匯入會整份取代,手動輸入的抽血結果會保留。</div>
     <div class="io-row"><button data-act="hk-import">選擇檔案匯入</button>${h ? '<button data-act="hk-delete" style="color:var(--danger)">刪除健檢資料</button>' : ''}</div></div>`;
   if (!h) return chips + `<div class="card"><div class="empty" style="padding:22px 8px">${escapeHtml(m.name)} 還沒有健檢資料</div><div class="io-row"><button data-act="hk-add">＋ 直接輸入抽血結果</button></div></div>` + importCard;
 
@@ -1476,7 +1496,68 @@ function renderHealth(){
   <div class="card">
     <h2>癌症篩檢</h2>
     ${scr.length ? scr.map(v=>`<div class="hk-row" style="cursor:default;flex-wrap:wrap"><span class="nm" style="flex:1 1 auto">${escapeHtml(v.kind)}</span><span class="dd">${v.d ? hkDate(v.d) : ''}</span><span style="flex-basis:100%;font-size:11px;color:var(--muted)">${escapeHtml(v.org||'')}${v.org?'・':''}${escapeHtml(v.result||'')}</span></div>`).join('') : '<div class="hint">無資料</div>'}
-  </div>` + importCard;
+  </div>` + hkVisitsCard(h) + importCard;
+}
+function hkIso(s){ s = String(s||''); return /^\d{8}$/.test(s) ? s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8) : null; }
+function hkConvertRaw(raw){
+  const bd = raw.myhealthbank.bdata || {};
+  const out = {labs:[], visits:[], vaccines:[], screenings:[], source:'健康存摺醫療類 JSON(健保快易通匯出)'};
+  (bd.r7||[]).forEach(x=>{
+    const d = hkIso(x['r7.6']) || hkIso(x['r7.5']); if (!d || !x['r7.10']) return;
+    out.labs.push({d, org:x['r7.4']||'', code:x['r7.8']||'', order:x['r7.9']||'', item:x['r7.10'], value:String(x['r7.11']||'').trim(), unit:'', ref:x['r7.12']||'', src:'nhi'});
+  });
+  const SKIP = /診察費|藥事服務費|加計|調劑|護理費|藥費|掛號|部分負擔/;
+  const fromOrders = (arr, pre, withDays)=>{
+    const orders = [], meds = [];
+    (arr||[]).forEach(o=>{
+      const name = o[pre+'.2'] || '', code = o[pre+'.1'] || '', days = parseInt(o[pre+'.4'],10);
+      if (!name) return;
+      if (withDays && days > 0 && !/^MA/.test(code) && !SKIP.test(name)) meds.push({name, qty:o[pre+'.3']||'', days});
+      else if (!SKIP.test(name)) orders.push(name);
+    });
+    return {orders, meds};
+  };
+  const names = (rec, pre, idx)=> idx.map(i=>rec[pre+'.'+i]).filter(Boolean);
+  const uniq = a => [...new Set(a)];
+  (bd.r1||[]).forEach(r=>{
+    const {orders, meds} = fromOrders(r.r1_1, 'r1_1', true);
+    out.visits.push({d:hkIso(r['r1.5']), org:r['r1.4']||'', type:'西醫', dx:uniq(names(r,'r1',[9,15,17,19,21,23,25,27])), proc:names(r,'r1',[11]), orders, meds});
+  });
+  (bd.r3||[]).forEach(r=>{
+    const {orders} = fromOrders(r.r3_1, 'r3_1', false);
+    out.visits.push({d:hkIso(r['r3.5']), org:r['r3.4']||'', type:'牙科', dx:uniq(names(r,'r3',[8,14,16,18,20,22])), proc:uniq(names(r,'r3',[10,24,26])), orders, meds:[]});
+  });
+  (bd.r9||[]).forEach(r=>{
+    const {orders, meds} = fromOrders(r.r9_1, 'r9_1', true);
+    out.visits.push({d:hkIso(r['r9.5']), org:r['r9.4']||'', type:'中醫', dx:uniq(names(r,'r9',[8,10,14,16,18,20,22,24,26])), proc:[], orders, meds});
+  });
+  out.visits = out.visits.filter(v=>v.d).sort((a,b)=>a.d<b.d?1:-1);
+  (bd.r6||[]).forEach(v=>{ const d = hkIso(v['r6.1']); if (d) out.vaccines.push({d, name:v['r6.3']||'', org:v['r6.5']||''}); });
+  (bd.r11||[]).forEach(g=>{
+    (g.r11_1||[]).forEach(v=>{ const d = hkIso(v['r11_1.1']); if (d) out.screenings.push({kind:g['r11.1']||'', test:g['r11.2']||'', d, org:v['r11_1.2']||'', result:v['r11_1.3']||''}); });
+  });
+  return out;
+}
+function hkVisitsCard(h){
+  const vs = h.visits || [];
+  if (!vs.length) return '';
+  const all = !!ui.hkVisitsAll, list = all ? vs : vs.slice(0, 12);
+  const rows = list.map(v=>{
+    const i = vs.indexOf(v);
+    return `<div class="hk-row" data-act="hk-visit" data-i="${i}"><span class="nm">${hkDate(v.d)}・${escapeHtml(v.org)} <span style="color:var(--muted);font-weight:600;font-size:11px">${v.type}</span></span><span style="flex:1 1 100%;font-size:12px;color:var(--muted)">${escapeHtml((v.dx||[]).slice(0,2).join('、') || (v.proc||[]).slice(0,1).join('') || (v.orders||[]).slice(0,2).join('、'))}</span></div>`;
+  }).join('');
+  return `<div class="card"><h2>就醫紀錄(健保,共 ${vs.length} 次)</h2>${rows}
+    ${vs.length > 12 ? `<div class="io-row" style="margin-top:8px"><button data-act="hk-visits-toggle">${all ? '只顯示最近 12 次' : '顯示全部 '+vs.length+' 次'}</button></div>` : ''}
+    <div class="hint" style="font-size:11px;margin-top:8px">資料為健保申報紀錄,非完整病歷;診斷名稱依院所申報。</div></div>`;
+}
+function hkOpenVisit(i){
+  const h = health[ui.hkMember]; const v = h && (h.visits||[])[i]; if (!v) return;
+  const sec = (t, arr, fmt)=> arr && arr.length ? `<div class="section-label" style="margin-top:12px">${t}</div>` + arr.map(fmt).join('') : '';
+  hkOpen(`<div class="dlg-title">${hkDate(v.d)}・${escapeHtml(v.org)}</div><div class="hk-ref">${v.type}門診</div>
+    ${sec('診斷', v.dx, x=>`<div style="font-size:13px;padding:3px 0">${escapeHtml(x)}</div>`)}
+    ${sec('處置', v.proc, x=>`<div style="font-size:13px;padding:3px 0">${escapeHtml(x)}</div>`)}
+    ${sec('檢查/處置項目', v.orders, x=>`<div style="font-size:13px;padding:3px 0">${escapeHtml(x)}</div>`)}
+    ${sec('藥品', v.meds, x=>`<div style="font-size:13px;padding:3px 0">${escapeHtml(x.name)} <span style="color:var(--muted)">${escapeHtml(String(x.qty))}・${x.days} 天</span></div>`)}`);
 }
 function hkOpen(html){
   const dlg = document.getElementById('dlg');
@@ -1517,15 +1598,18 @@ async function hkDelete(){
 document.getElementById('hkFile').addEventListener('change', async (e)=>{
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
   let data;
-  try { data = JSON.parse(await f.text()); if (!Array.isArray(data.labs)) throw new Error('bad'); }
-  catch(err){ alert('檔案格式不正確,請選「健保存摺整理.json」'); return; }
+  try {
+    data = JSON.parse((await f.text()).replace(/^\uFEFF/, ''));
+    if (data && data.myhealthbank && data.myhealthbank.bdata) data = hkConvertRaw(data);
+    if (!Array.isArray(data.labs)) throw new Error('bad');
+  } catch(err){ alert('檔案格式不正確,請選健保快易通匯出的「健康存摺」JSON 檔'); return; }
   const ms = activeMembers();
   if (!ms.length){ alert('請先到「設定」新增成員'); return; }
   const apply = async (mid)=>{
-    health[mid] = {labs:data.labs, checkups:data.checkups||[], vaccines:data.vaccines||[], screenings:data.screenings||[], manual:(health[mid]&&health[mid].manual)||[], source:data.source||'', importedAt:Date.now()};
+    health[mid] = {labs:data.labs, checkups:data.checkups||[], vaccines:data.vaccines||[], screenings:data.screenings||[], manual:(health[mid]&&health[mid].manual)||[], visits:data.visits||(health[mid]&&health[mid].visits)||[], source:data.source||'', importedAt:Date.now()};
     await idbSet('health', health);
     ui.hkMember = mid; ui.tab = 'health'; render();
-    alert('已匯入 '+data.labs.length+' 筆檢驗資料');
+    alert('已匯入 '+data.labs.length+' 筆檢驗資料' + (data.visits&&data.visits.length ? '、'+data.visits.length+' 次就醫紀錄' : ''));
   };
   if (ms.length === 1) return apply(ms[0].id);
   const dlg = document.getElementById('dlg');
@@ -1539,7 +1623,7 @@ document.getElementById('hkFile').addEventListener('change', async (e)=>{
 
 
 /* ---------- 版本檢查(回到 App 時自動偵測新版) ---------- */
-const BUILD = '20261024c';
+const BUILD = '20261025a';
 async function hardReload(){
   try {
     const regs = await navigator.serviceWorker.getRegistrations();
