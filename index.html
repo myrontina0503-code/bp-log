@@ -1195,7 +1195,7 @@ const HK_KEY = ['BP','LDL','HDL','TC','TG','GLU','A1C','TSH','FT4','CREA','ALT',
 const HK_CK_MAP = {'身高':'HT','體重':'WT','BMI(身體質量指數)':'BMI','腰圍':'WAIST','收縮壓':'SBP','舒張壓':'DBP','總膽固醇(TC)':'TC','三酸甘油酯(TG)':'TG','高密度脂蛋白膽固醇(HDL)':'HDL','低密度脂蛋白膽固醇(LDL)':'LDL','飯前血糖':'GLU','肌酸酐':'CREA','腎絲球過濾率':'EGFR','SGOT(AST或GOT)':'AST','SGPT(ALT或GPT)':'ALT'};
 
 function hkKeyOf(item, order){
-  const n = String(item||'').trim(), L = n.toLowerCase();
+  const n = String(item||'').trim(), L = n.toLowerCase().replace(/\s+/g,' ');
   if (/尿一般檢查/.test(order||'')){
     const t = L.replace(/^u-/,'');
     const m = {appearance:'UAPP',bilirubin:'UBIL',cast:'UCAST',crystal:'UCRY',ketones:'UKET','occult blood':'UOB',protein:'UPRO',sugar:'USUG','specific gravity':'USG',ph:'UPH',wbc:'UWBC',urobilinogen:'UURO'};
@@ -1501,7 +1501,7 @@ function renderHealth(){
 function hkIso(s){ s = String(s||''); return /^\d{8}$/.test(s) ? s.slice(0,4)+'-'+s.slice(4,6)+'-'+s.slice(6,8) : null; }
 function hkConvertRaw(raw){
   const bd = raw.myhealthbank.bdata || {};
-  const out = {labs:[], visits:[], vaccines:[], screenings:[], source:'健康存摺醫療類 JSON(健保快易通匯出)'};
+  const out = {labs:[], checkups:[], visits:[], vaccines:[], screenings:[], source:'健康存摺醫療類 JSON(健保快易通匯出)'};
   (bd.r7||[]).forEach(x=>{
     const d = hkIso(x['r7.6']) || hkIso(x['r7.5']); if (!d || !x['r7.10']) return;
     out.labs.push({d, org:x['r7.4']||'', code:x['r7.8']||'', order:x['r7.9']||'', item:x['r7.10'], value:String(x['r7.11']||'').trim(), unit:'', ref:x['r7.12']||'', src:'nhi'});
@@ -1530,6 +1530,19 @@ function hkConvertRaw(raw){
   (bd.r9||[]).forEach(r=>{
     const {orders, meds} = fromOrders(r.r9_1, 'r9_1', true);
     out.visits.push({d:hkIso(r['r9.5']), org:r['r9.4']||'', type:'中醫', dx:uniq(names(r,'r9',[8,10,14,16,18,20,22,24,26])), proc:[], orders, meds});
+  });
+  (bd.r10||[]).forEach(r=>{
+    const d = hkIso(r['r10.5']); if (!d) return;
+    const it = [];
+    const add = (g, n, v, u)=>{ if (v != null && String(v).trim() !== '') it.push({group:g, name:n, value:String(v).trim(), unit:u||''}); };
+    let w = r['r10.9']; if (w && parseFloat(w) < 60) w = String(Math.round(parseFloat(w)*25.4)/10);
+    add('一般檢查','身高',r['r10.6'],'cm'); add('一般檢查','體重',r['r10.7'],'kg'); add('一般檢查','BMI(身體質量指數)',r['r10.8'],'kg/m2'); add('一般檢查','腰圍',w,'cm');
+    add('血壓檢查','收縮壓',r['r10.10'],'mmHg'); add('血壓檢查','舒張壓',r['r10.11'],'mmHg'); add('血壓檢查','結果',r['r10.13'],'');
+    add('血脂肪檢查','總膽固醇(TC)',r['r10.14'],'mg/dl'); add('血脂肪檢查','三酸甘油酯(TG)',r['r10.15'],'mg/dl'); add('血脂肪檢查','高密度脂蛋白膽固醇(HDL)',r['r10.16'],'mg/dl'); add('血脂肪檢查','低密度脂蛋白膽固醇(LDL)',r['r10.17'],'mg/dl'); add('血脂肪檢查','結果',r['r10.19'],'');
+    add('血糖檢查','飯前血糖',r['r10.20'],'mg/dl'); add('血糖檢查','結果',r['r10.22'],'');
+    add('腎功能檢查','肌酸酐',r['r10.24'],'mg/dl'); add('腎功能檢查','腎絲球過濾率',r['r10.25'],'ml/min/1.73 m2'); add('腎功能檢查','結果',r['r10.27'],'');
+    add('肝功能檢查','SGOT(AST或GOT)',r['r10.31'],'IU/l'); add('肝功能檢查','SGPT(ALT或GPT)',r['r10.32'],'IU/l'); add('肝功能檢查','結果',r['r10.34'],'');
+    out.checkups.push({d, org:r['r10.2']||'', items:it});
   });
   out.visits = out.visits.filter(v=>v.d).sort((a,b)=>a.d<b.d?1:-1);
   (bd.r6||[]).forEach(v=>{ const d = hkIso(v['r6.1']); if (d) out.vaccines.push({d, name:v['r6.3']||'', org:v['r6.5']||''}); });
@@ -1606,7 +1619,7 @@ document.getElementById('hkFile').addEventListener('change', async (e)=>{
   const ms = activeMembers();
   if (!ms.length){ alert('請先到「設定」新增成員'); return; }
   const apply = async (mid)=>{
-    health[mid] = {labs:data.labs, checkups:data.checkups||[], vaccines:data.vaccines||[], screenings:data.screenings||[], manual:(health[mid]&&health[mid].manual)||[], visits:data.visits||(health[mid]&&health[mid].visits)||[], source:data.source||'', importedAt:Date.now()};
+    health[mid] = {labs:data.labs, checkups:(data.checkups&&data.checkups.length)?data.checkups:((health[mid]&&health[mid].checkups)||[]), vaccines:data.vaccines||[], screenings:data.screenings||[], manual:(health[mid]&&health[mid].manual)||[], visits:data.visits||(health[mid]&&health[mid].visits)||[], source:data.source||'', importedAt:Date.now()};
     await idbSet('health', health);
     ui.hkMember = mid; ui.tab = 'health'; render();
     alert('已匯入 '+data.labs.length+' 筆檢驗資料' + (data.visits&&data.visits.length ? '、'+data.visits.length+' 次就醫紀錄' : ''));
@@ -1623,7 +1636,7 @@ document.getElementById('hkFile').addEventListener('change', async (e)=>{
 
 
 /* ---------- 版本檢查(回到 App 時自動偵測新版) ---------- */
-const BUILD = '20261025a';
+const BUILD = '20261025b';
 async function hardReload(){
   try {
     const regs = await navigator.serviceWorker.getRegistrations();
