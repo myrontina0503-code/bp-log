@@ -423,12 +423,41 @@ async function doSync(alertOnFail){
     if (!putOk) throw new Error('上傳失敗(金鑰沒有寫入權限)');
     syncCfg.lastSync = Date.now();
     await saveSyncCfg();
+    try { await pushHealthShare(); } catch(e){ /* 健檢分享失敗不影響一般同步 */ }
     if (alertOnFail) alert('已同步!' + (imp && imp.added ? '\n從健康匯入血壓 '+imp.added+' 筆' : '') + (imp && imp.steps ? '\n更新步數 '+imp.steps+' 天' : '') + (imp && imp.unmatched ? '\n有 '+imp.unmatched+' 筆健康資料找不到對應成員(捷徑裡的姓名要和成員名稱完全一樣)' : ''));
   } catch(e){
     if (alertOnFail) alert('同步失敗:' + (e && e.message ? e.message : '請檢查網路連線') + '\n\n請確認同步金鑰正確。');
   } finally {
     syncing = false;
   }
+}
+/* ---------- 健檢分享給加油日記(只傳整理後的檢驗與健檢日期,不傳就醫紀錄、疫苗) ---------- */
+function hkShareOf(mid){
+  const h = health[mid], m = memberById(mid); if (!h || !m || !h.share) return null;  // 只有打開「分享給加油日記」的成員才上傳
+  const S = hkSeries(h, m), bp = hkBpSeries(S);
+  const series = [...S.values()].filter(x=>x.key!=='SBP' && x.key!=='DBP').map(x=>({key:x.key, name:x.name, cat:x.cat, unit:x.unit, ref:x.fallbackRef||'',
+    pts:x.pts.map(q=>({d:q.d, raw:String(q.raw), st:q.st||'', src:q.src||''}))}));
+  if (bp) series.unshift({key:'BP', name:bp.name, cat:bp.cat, unit:'mmHg', ref:'', pts:bp.pts.map(q=>({d:q.d, raw:q.raw, st:q.st||'', src:q.src||'', label:q.cat&&q.cat.label||''}))});
+  return { name:m.name, series, checkups:(h.checkups||[]).map(c=>({d:c.d, org:c.org||''})), interval:h.interval??null };
+}
+function hkHash(str){ let x = 0; for (let i=0;i<str.length;i++) x = (x*31 + str.charCodeAt(i))|0; return x+':'+str.length; }
+async function pushHealthShare(){
+  if (!syncCfg || !syncCfg.dbUrl) return;
+  const base = syncCfg.dbUrl.trim().replace(/\/+$/,'');
+  syncCfg.hkPushed = syncCfg.hkPushed || {};
+  for (const mid of Object.keys(health)){
+    const sh = hkShareOf(mid); if (!sh) continue;
+    const body = JSON.stringify(sh), hs = hkHash(body);
+    if (syncCfg.hkPushed[mid] === hs) continue;   // 沒變就不重傳
+    const res = await fetch(base + '/bp_health/' + mid + '.json', {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify({...sh, up:Date.now()})});
+    if (res.ok) syncCfg.hkPushed[mid] = hs;
+  }
+  for (const mid of Object.keys(syncCfg.hkPushed)){
+    if (health[mid] && health[mid].share) continue;  // 關掉分享或刪掉健檢資料,就把雲端那份刪掉
+    const res = await fetch(base + '/bp_health/' + mid + '.json', {method:'DELETE'});
+    if (res.ok) delete syncCfg.hkPushed[mid];
+  }
+  await saveSyncCfg();
 }
 let syncTimer = null;
 function scheduleSync(){
@@ -985,7 +1014,7 @@ function bindTabEvents(){
     main.addEventListener('focusout', onValFocusOut);
   }
   const hkInt = document.getElementById('hkInt');
-  if (hkInt) hkInt.onchange = async ()=>{ const m2 = memberById(ui.hkMember); if (m2 && health[m2.id]){ health[m2.id].interval = parseInt(hkInt.value,10); await idbSet('health', health); render(); } };
+  if (hkInt) hkInt.onchange = async ()=>{ const m2 = memberById(ui.hkMember); if (m2 && health[m2.id]){ health[m2.id].interval = parseInt(hkInt.value,10); await idbSet('health', health); scheduleSync(); render(); } };
   const note = document.getElementById('noteInput');
   if (note) note.oninput = ()=>{ ui.entry.note = note.value; };
   const tsInput = document.getElementById('tsInput');
@@ -1433,14 +1462,14 @@ function hkOpenAdd(){
     if (!add.length){ alert('至少填一個項目'); return; }
     const hh = health[m.id] || (health[m.id] = {labs:[], checkups:[], vaccines:[], screenings:[], source:'', importedAt:null});
     hh.manual = (hh.manual||[]).filter(x=>x.d!==d).concat(add);
-    await idbSet('health', health);
+    await idbSet('health', health); scheduleSync();
     dlg.close(); render();
   };
 }
 function hkManualDel(d){
   const m = memberById(ui.hkMember), h = m && health[m.id]; if (!h) return;
   confirmDialog('確定刪除 '+hkDate(d)+' 手動輸入的抽血結果?', async ()=>{
-    h.manual = (h.manual||[]).filter(x=>x.d!==d); await idbSet('health', health); render();
+    h.manual = (h.manual||[]).filter(x=>x.d!==d); await idbSet('health', health); scheduleSync(); render();
   });
 }
 function renderHealth(){
@@ -1450,7 +1479,7 @@ function renderHealth(){
   const m = memberById(ui.hkMember), h = health[m.id];
   const chips = ms.length > 1 ? `<div class="card"><h2>成員</h2><div class="mrow">${ms.map(x=>`<button class="mchip ${x.id===m.id?'on':''}" style="--m-color:${x.color}" data-act="hk-member" data-id="${x.id}"><span class="dot"></span>${escapeHtml(x.name)}</button>`).join('')}</div></div>` : '';
   const importCard = `<div class="card"><h2>匯入健保存摺資料</h2>
-    <div class="hint" style="margin-bottom:10px">在手機的「健保快易通」→ 健康存摺,下載「醫療類」JSON 檔,存到「檔案」後選取匯入(不需要整理)。資料<b>只存在這支手機</b>,不會同步給其他家人。重新匯入會整份取代,手動輸入的抽血結果會保留。</div>
+    <div class="hint" style="margin-bottom:10px">在手機的「健保快易通」→ 健康存摺,下載「醫療類」JSON 檔,存到「檔案」後選取匯入(不需要整理)。資料存在這支手機;有設定同步金鑰時,打勾「分享給加油日記」的成員,整理好的檢驗結果與健檢日期會同步到雲端,讓「加油日記」也看得到(就醫紀錄、疫苗不會上傳)。重新匯入會整份取代,手動輸入的抽血結果會保留。</div>
     <div class="io-row"><button data-act="hk-import">選擇檔案匯入</button>${h ? '<button data-act="hk-delete" style="color:var(--danger)">刪除健檢資料</button>' : ''}</div></div>`;
   if (!h) return chips + `<div class="card"><div class="empty" style="padding:22px 8px">${escapeHtml(m.name)} 還沒有健檢資料</div><div class="io-row"><button data-act="hk-add">＋ 直接輸入抽血結果</button></div></div>` + importCard;
 
@@ -1469,6 +1498,7 @@ function renderHealth(){
   return chips + `
   <div class="card">
     <h2>${escapeHtml(m.name)} 的健檢資料</h2>
+    <label style="display:flex;align-items:center;gap:8px;font-size:14px;margin:4px 0 8px"><input type="checkbox" ${h.share ? 'checked' : ''} onchange="hkToggleShare('${m.id}', this.checked)" style="width:20px;height:20px">分享給「加油日記」${syncCfg && syncCfg.dbUrl ? '' : '<span style="color:var(--muted);font-size:12px">(要先在設定填同步金鑰)</span>'}</label>
     <div class="hint">檢驗 ${(h.labs||[]).length + (h.manual||[]).length} 筆・${dates.size} 個檢查日・最近一次 ${hkDate(latest)}<br>${h.importedAt ? '匯入於 '+fmtDate(h.importedAt) : '尚未匯入健保存摺'}</div>
   </div>
   ${hkPanelCard(S, h)}
@@ -1602,10 +1632,16 @@ function hkOpenCheckup(i){
   }).join('');
   hkOpen(`<div class="dlg-title">成人預防保健 ${hkDate(c.d)}</div><div class="hk-ref">${escapeHtml(c.org)}</div><table class="hk-t">${rows}</table>`);
 }
+async function hkToggleShare(mid, on){
+  if (!health[mid]) return;
+  health[mid].share = !!on; await idbSet('health', health);
+  if (syncCfg && syncCfg.dbUrl){ try { await pushHealthShare(); } catch(e){ alert('同步失敗,稍後會再試'); } }
+  render();
+}
 async function hkDelete(){
   const m = memberById(ui.hkMember); if (!m || !health[m.id]) return;
   confirmDialog('確定刪除「'+m.name+'」的健檢資料?(原始 JSON 檔還在,可以再匯入)', async ()=>{
-    delete health[m.id]; await idbSet('health', health); render();
+    delete health[m.id]; await idbSet('health', health); scheduleSync(); render();
   });
 }
 document.getElementById('hkFile').addEventListener('change', async (e)=>{
@@ -1619,8 +1655,8 @@ document.getElementById('hkFile').addEventListener('change', async (e)=>{
   const ms = activeMembers();
   if (!ms.length){ alert('請先到「設定」新增成員'); return; }
   const apply = async (mid)=>{
-    health[mid] = {labs:data.labs, checkups:(data.checkups&&data.checkups.length)?data.checkups:((health[mid]&&health[mid].checkups)||[]), vaccines:data.vaccines||[], screenings:data.screenings||[], manual:(health[mid]&&health[mid].manual)||[], visits:data.visits||(health[mid]&&health[mid].visits)||[], source:data.source||'', importedAt:Date.now()};
-    await idbSet('health', health);
+    health[mid] = {labs:data.labs, checkups:(data.checkups&&data.checkups.length)?data.checkups:((health[mid]&&health[mid].checkups)||[]), vaccines:data.vaccines||[], screenings:data.screenings||[], manual:(health[mid]&&health[mid].manual)||[], visits:data.visits||(health[mid]&&health[mid].visits)||[], source:data.source||'', importedAt:Date.now(), share:!!(health[mid]&&health[mid].share), interval:health[mid]?health[mid].interval:undefined};
+    await idbSet('health', health); scheduleSync();
     ui.hkMember = mid; ui.tab = 'health'; render();
     alert('已匯入 '+data.labs.length+' 筆檢驗資料' + (data.visits&&data.visits.length ? '、'+data.visits.length+' 次就醫紀錄' : ''));
   };
@@ -1636,7 +1672,7 @@ document.getElementById('hkFile').addEventListener('change', async (e)=>{
 
 
 /* ---------- 版本檢查(回到 App 時自動偵測新版) ---------- */
-const BUILD = '20261025b';
+const BUILD = '20261026a';
 async function hardReload(){
   try {
     const regs = await navigator.serviceWorker.getRegistrations();
